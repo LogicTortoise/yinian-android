@@ -1,0 +1,145 @@
+package com.yinian.android.data.dao
+
+import androidx.room.Dao
+import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Update
+import com.yinian.android.data.entity.FocusSessionEntity
+import com.yinian.android.data.entity.IdeaEntity
+import com.yinian.android.data.entity.RelationEntity
+import com.yinian.android.data.entity.TaskEntity
+import com.yinian.android.data.entity.TimeBlockEntity
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface IdeaDao {
+    @Query("SELECT * FROM ideas WHERE archived = 0 ORDER BY createdAt DESC")
+    fun observeActive(): Flow<List<IdeaEntity>>
+
+    @Query("SELECT * FROM ideas WHERE id = :id")
+    fun observeById(id: String): Flow<IdeaEntity?>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(idea: IdeaEntity)
+
+    @Update
+    suspend fun update(idea: IdeaEntity)
+
+    @Delete
+    suspend fun delete(idea: IdeaEntity)
+
+    @Query("UPDATE ideas SET archived = :archived, updatedAt = :now WHERE id = :id")
+    suspend fun setArchived(id: String, archived: Boolean, now: Long)
+
+    @Query("SELECT * FROM ideas WHERE id = :id")
+    suspend fun getById(id: String): IdeaEntity?
+
+    @Query("SELECT COUNT(*) FROM ideas")
+    suspend fun count(): Int
+}
+
+@Dao
+interface TaskDao {
+    @Query("SELECT * FROM tasks ORDER BY status ASC, priority ASC, createdAt DESC")
+    fun observeAll(): Flow<List<TaskEntity>>
+
+    @Query("SELECT * FROM tasks WHERE status != 'archived'")
+    fun observeActive(): Flow<List<TaskEntity>>
+
+    @Query("SELECT * FROM tasks WHERE id = :id")
+    fun observeById(id: String): Flow<TaskEntity?>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(task: TaskEntity)
+
+    @Update
+    suspend fun update(task: TaskEntity)
+
+    @Query("UPDATE tasks SET status = :status, updatedAt = :now WHERE id = :id")
+    suspend fun setStatus(id: String, status: String, now: Long)
+
+    @Query("DELETE FROM tasks WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface RelationDao {
+    @Query("SELECT * FROM relations WHERE fromId = :id OR toId = :id")
+    fun observeFor(id: String): Flow<List<RelationEntity>>
+
+    @Query("SELECT * FROM relations")
+    fun observeAll(): Flow<List<RelationEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(relation: RelationEntity)
+
+    @Query("DELETE FROM relations WHERE fromId = :from AND toId = :to AND kind = :kind")
+    suspend fun delete(from: String, to: String, kind: String)
+
+    @Query("DELETE FROM relations WHERE fromId = :id OR toId = :id")
+    suspend fun deleteAllFor(id: String)
+
+    @Query("SELECT * FROM relations")
+    suspend fun getAll(): List<RelationEntity>
+}
+
+@Dao
+interface TimeBlockDao {
+    @Query("SELECT * FROM time_blocks WHERE startAt >= :start AND startAt < :end ORDER BY startAt ASC")
+    fun observeBetween(start: Long, end: Long): Flow<List<TimeBlockEntity>>
+
+    /**
+     * Returns any block whose half-open interval overlaps [start, end). For
+     * two half-open intervals [a,b) and [c,d) the overlap predicate is
+     * `a < d && b > c`, which is exactly what we need to detect a fixed
+     * block that started before [start, end) but extends into it.
+     */
+    @Query("SELECT * FROM time_blocks WHERE startAt < :end AND endAt > :start ORDER BY startAt ASC")
+    suspend fun getBetween(start: Long, end: Long): List<TimeBlockEntity>
+
+    @Query("SELECT * FROM time_blocks WHERE taskId = :taskId ORDER BY startAt ASC")
+    fun observeForTask(taskId: String): Flow<List<TimeBlockEntity>>
+
+    @Query("SELECT * FROM time_blocks ORDER BY startAt ASC")
+    fun observeAll(): Flow<List<TimeBlockEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(block: TimeBlockEntity)
+
+    @Query("DELETE FROM time_blocks WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM time_blocks WHERE taskId = :taskId")
+    suspend fun deleteForTask(taskId: String)
+}
+
+@Dao
+interface FocusDao {
+    @Query("SELECT * FROM focus_sessions ORDER BY startedAt DESC")
+    fun observeAll(): Flow<List<FocusSessionEntity>>
+
+    @Query("SELECT * FROM focus_sessions ORDER BY startedAt DESC")
+    suspend fun all(): List<FocusSessionEntity>
+
+    @Query("SELECT * FROM focus_sessions WHERE status IN ('active','paused') ORDER BY startedAt DESC LIMIT 1")
+    fun observeActive(): Flow<FocusSessionEntity?>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(session: FocusSessionEntity)
+
+    /**
+     * Persists a pause/complete/cancel transition: folds the current active
+     * segment into accumulated ms and marks the session with the given status.
+     */
+    @Query("UPDATE focus_sessions SET status = :status, activeStartedAt = NULL, pausedMs = :pausedMs, endedAt = :endedAt WHERE id = :id")
+    suspend fun applyPause(id: String, status: String, pausedMs: Long, endedAt: Long?)
+
+    /**
+     * Persists a resume transition: starts a fresh active segment while keeping
+     * the accumulated pausedMs untouched.
+     */
+    @Query("UPDATE focus_sessions SET status = :status, activeStartedAt = :activeStartedAt, endedAt = NULL WHERE id = :id")
+    suspend fun applyResume(id: String, status: String, activeStartedAt: Long)
+}

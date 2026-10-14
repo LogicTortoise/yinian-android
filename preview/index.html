@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#F2F8F5">
+  <meta name="description" content="一念：从一闪而过的想法，到刚刚好的下一步。Android 交互设计预览。">
+  <title>一念 · Android 交互预览</title>
+  <link rel="stylesheet" href="styles.css?v=4">
+  <script src="assets/lucide.min.js" defer></script>
+  <script src="app.js?v=4" defer></script>
+</head>
+<body>
+  <header class="preview-bar">
+    <a href="index.html" class="preview-brand"><span class="brand-mark"><i data-lucide="audio-lines"></i></span><b>一念</b><span class="preview-divider"></span><span>Android 设计预览</span></a>
+    <div class="preview-actions"><a href="research.html">设计与选型 <i data-lucide="arrow-up-right"></i></a><button id="theme-toggle" aria-label="切换深浅主题"><i data-lucide="moon"></i></button></div>
+  </header>
+  <main class="studio">
+    <aside class="intro">
+      <span class="version-label"><span></span> 氧气淡绿 · 轻盈浮层</span>
+      <h1>让闪念落地。<br>给生活留白。</h1>
+      <p>一个只关心你下一步的空间。<br>说下来，理清楚，再慢慢完成。</p>
+      <div class="screen-switcher" aria-label="预览页面">
+        <button data-screen="now" class="selected"><i data-lucide="circle-dot"></i><span>现在<small>把注意力留给一件事</small></span><i data-lucide="chevron-right"></i></button>
+        <button data-screen="ideas"><i data-lucide="layers-2"></i><span>闪念<small>想法、待办和它们的关联</small></span><i data-lucide="chevron-right"></i></button>
+        <button data-screen="plan"><i data-lucide="calendar-days"></i><span>计划<small>看见安排，也看见空闲</small></span><i data-lucide="chevron-right"></i></button>
+        <button data-screen="me"><i data-lucide="sliders-horizontal"></i><span>我的<small>按照你的节奏来</small></span><i data-lucide="chevron-right"></i></button>
+      </div>
+      <p class="preview-disclaimer">可点击体验 · 示例数据<br>语音与 AI 为流程演示，不会录音或调用模型。</p>
+    </aside>
+
+    <div class="device-stage">
+    <section class="device" aria-label="一念 Android 应用预览">
+      <div class="statusbar"><span>9:41</span><span class="camera-dot"></span><div><i data-lucide="signal"></i><i data-lucide="wifi"></i><i data-lucide="battery-full"></i></div></div>
+      <div id="screen" class="screen"></div>
+      <div class="capture-dock"><button id="capture-open" class="capture-button"><span class="mic-disc"><i data-lucide="mic"></i></span><span>说说你的想法<small>先记下来，慢慢理清</small></span><i data-lucide="plus"></i></button></div>
+      <nav class="bottom-nav" aria-label="主导航">
+        <button data-screen="now" aria-current="page"><span><i data-lucide="circle-dot"></i></span>现在</button>
+        <button data-screen="ideas"><span><i data-lucide="layers-2"></i></span>闪念</button>
+        <button data-screen="plan"><span><i data-lucide="calendar-days"></i></span>计划</button>
+        <button data-screen="me"><span><i data-lucide="sliders-horizontal"></i></span>我的</button>
+      </nav>
+      <div class="gesture-bar"><span></span></div>
+      <div id="toast" class="toast" role="status" hidden></div>
+      <dialog id="sheet" class="sheet"><div class="sheet-handle"></div><div class="sheet-toolbar"><span id="sheet-label"></span><button id="sheet-close" class="icon-button" aria-label="关闭"><i data-lucide="x"></i></button></div><div id="sheet-body"></div></dialog>
+    </section>
+    </div>
+
+    <aside class="design-notes">
+      <span class="note-kicker">清透一点，轻轻浮起</span>
+      <div class="swatches"><span style="background:#AFCFBF"></span><span style="background:#E2F0E8"></span><span style="background:#E9F1F7"></span><span style="background:#F7EAEE"></span></div>
+      <h2 id="context-title">此刻，只做一件事</h2>
+      <p id="context-description">推荐有理由，安排可调整。其他事情安静地待在列表里。</p>
+      <div class="try-note"><i data-lucide="mouse-pointer-2"></i><p id="try-description">试试「开始专注」，或点下方的语音入口。</p></div>
+      <div class="note-rule"></div>
+      <p class="specification">安卓原生方向<br>氧气淡绿 · 立体边缘 · 按压反馈</p>
+    </aside>
+  </main>
+  <footer class="studio-footer"><span>一念 / Android concept 04</span><button id="reset-demo">重置演示数据</button><span>仅本地交互预览</span></footer>
+</body>
+</html>

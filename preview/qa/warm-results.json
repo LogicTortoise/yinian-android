@@ -1,0 +1,69 @@
+{
+  "date": "2026-10-12",
+  "scope": "Warm palette, surface hierarchy, responsive visual QA; no native Android verification",
+  "layout": [
+    {
+      "width": 320,
+      "view": "now",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "view": "ideas",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "view": "plan",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "view": "me",
+      "overflow": false
+    },
+    {
+      "width": 360,
+      "view": "now",
+      "overflow": false
+    },
+    {
+      "width": 360,
+      "view": "ideas",
+      "overflow": false
+    },
+    {
+      "width": 360,
+      "view": "plan",
+      "overflow": false
+    },
+    {
+      "width": 360,
+      "view": "me",
+      "overflow": false
+    },
+    {
+      "width": 412,
+      "view": "now",
+      "overflow": false
+    },
+    {
+      "width": 412,
+      "view": "ideas",
+      "overflow": false
+    },
+    {
+      "width": 412,
+      "view": "plan",
+      "overflow": false
+    },
+    {
+      "width": 412,
+      "view": "me",
+      "overflow": false
+    }
+  ],
+  "settingsGroups": 2,
+  "settingsRows": 6,
+  "errors": []
+}

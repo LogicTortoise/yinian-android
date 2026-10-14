@@ -1,0 +1,37 @@
+# Gradle
+.gradle/
+build/
+local.properties
+
+# Android
+*.apk
+*.ap_
+*.aab
+*.dex
+*.class
+bin/
+gen/
+out/
+release/
+captures/
+.cxx/
+.externalNativeBuild/
+
+# Kotlin
+.kotlin/
+
+# IDEA / Android Studio
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Mac
+.DS_Store
+
+# Logs
+*.log
+
+# Local run artifacts
+.workspace/
+/outputs/

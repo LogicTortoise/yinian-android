@@ -1,0 +1,119 @@
+{
+  "errors": [],
+  "layouts": [
+    {
+      "page": "now",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    },
+    {
+      "page": "ideas",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    },
+    {
+      "page": "plan",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    },
+    {
+      "page": "me",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    },
+    {
+      "width": 320,
+      "page": "now",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    },
+    {
+      "width": 320,
+      "page": "ideas",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    },
+    {
+      "width": 320,
+      "page": "plan",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    },
+    {
+      "width": 320,
+      "page": "me",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    },
+    {
+      "width": 360,
+      "page": "now",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    },
+    {
+      "width": 360,
+      "page": "ideas",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    },
+    {
+      "width": 360,
+      "page": "plan",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    },
+    {
+      "width": 360,
+      "page": "me",
+      "bodyOverflow": false,
+      "screenOverflow": false
+    }
+  ],
+  "interactions": [
+    {
+      "name": "desktop sheet fits device",
+      "passed": true
+    },
+    {
+      "name": "mobile sheet fits viewport",
+      "passed": true
+    },
+    {
+      "name": "capture saved and visible",
+      "passed": true
+    },
+    {
+      "name": "undo removes captured idea",
+      "passed": true
+    },
+    {
+      "name": "dependency view visible",
+      "passed": true
+    },
+    {
+      "name": "priority view visible",
+      "passed": true
+    },
+    {
+      "name": "focus sheet visible",
+      "passed": true
+    },
+    {
+      "name": "focus paused",
+      "passed": true
+    },
+    {
+      "name": "empty day rendered",
+      "passed": true
+    },
+    {
+      "name": "reduced motion respected",
+      "passed": true
+    },
+    {
+      "name": "worktime sheet usable",
+      "passed": true
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "date": "2026-10-12",
+  "checks": [
+    {
+      "name": "生活筛选",
+      "pass": true
+    },
+    {
+      "name": "闪念详情",
+      "pass": true
+    },
+    {
+      "name": "优先级视图",
+      "pass": true
+    },
+    {
+      "name": "依赖视图",
+      "pass": true
+    },
+    {
+      "name": "搜索",
+      "pass": true
+    },
+    {
+      "name": "语音入口",
+      "pass": true
+    }
+  ],
+  "layout": [
+    {
+      "width": 320,
+      "view": "now",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "view": "ideas",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "view": "plan",
+      "overflow": false
+    },
+    {
+      "width": 320,
+      "view": "me",
+      "overflow": false
+    },
+    {
+      "width": 360,
+      "view": "now",
+      "overflow": false
+    },
+    {
+      "width": 360,
+      "view": "ideas",
+      "overflow": false
+    },
+    {
+      "width": 360,
+      "view": "plan",
+      "overflow": false
+    },
+    {
+      "width": 360,
+      "view": "me",
+      "overflow": false
+    },
+    {
+      "width": 412,
+      "view": "now",
+      "overflow": false
+    },
+    {
+      "width": 412,
+      "view": "ideas",
+      "overflow": false
+    },
+    {
+      "width": 412,
+      "view": "plan",
+      "overflow": false
+    },
+    {
+      "width": 412,
+      "view": "me",
+      "overflow": false
+    }
+  ],
+  "errors": []
+}
