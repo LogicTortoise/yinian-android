@@ -5,6 +5,7 @@ import com.yinian.android.data.entity.IdeaEntity
 import com.yinian.android.data.entity.RelationEntity
 import com.yinian.android.data.entity.TaskEntity
 import com.yinian.android.data.entity.TimeBlockEntity
+import com.yinian.android.data.entity.WorkPolicyEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -144,6 +145,17 @@ class SeedInitializer(
                     fixed = false
                 )
             )
+
+            // V2 default work policy: Mon–Fri 9–18 with 15-min buffer and an 8-hour cap.
+            listOf(
+                WorkPolicyEntity(1, true, 9 * 60, 18 * 60, 15, 8 * 60),
+                WorkPolicyEntity(2, true, 9 * 60, 18 * 60, 15, 8 * 60),
+                WorkPolicyEntity(3, true, 9 * 60, 18 * 60, 15, 8 * 60),
+                WorkPolicyEntity(4, true, 9 * 60, 18 * 60, 15, 8 * 60),
+                WorkPolicyEntity(5, true, 9 * 60, 18 * 60, 15, 8 * 60),
+                WorkPolicyEntity(6, false, 9 * 60, 18 * 60, 0, 0),
+                WorkPolicyEntity(7, false, 9 * 60, 18 * 60, 0, 0)
+            ).forEach { database.workPolicyDao().upsert(it) }
         }
     }
 }

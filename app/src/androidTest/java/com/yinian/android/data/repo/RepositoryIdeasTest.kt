@@ -29,8 +29,13 @@ class RepositoryIdeasTest {
             relationDao = FakeRelationDao(),
             timeBlockDao = FakeTimeBlockDao(),
             focusDao = FakeFocusDao(),
+            workPolicyDao = FakeWorkPolicyDao(),
+            recurringRuleDao = FakeRecurringRuleDao(),
+            recurringInstanceDao = FakeRecurringInstanceDao(),
+            scheduleDraftDao = FakeScheduleDraftDao(),
             prefs = com.yinian.android.data.prefs.PrefsRepository(context),
-            audioRecorder = AudioRecorder(context)
+            audioRecorder = AudioRecorder(context),
+            calendarBusyReader = com.yinian.android.calendar.CalendarBusyReader(context)
         )
         return repo to dir
     }

@@ -1,17 +1,31 @@
-# 一念 · Android V1
+# 一念 · Android
 
-一念的原生 Android 客户端 V1。本仓库当前阶段产出物：
+一念的原生 Android 客户端。本仓库当前阶段产出物：
 
 - 干净的 Gradle 工程骨架（Kotlin DSL，Gradle Wrapper 已生成）。
 - 与 `产品与技术方案.txt`、`UI设计规范.txt` 和 v4 视觉一致的四个底部入口。
 - 本地优先：Room + DataStore；状态、依赖、时间和专注数据全部本地。
 - 主动语音录入会真实落盘到应用私有目录，并在没有 ASR 服务时如实标注「转写未配置」。
 
-## V1 范围
+## V2 范围（当前 main 分支）
 
-参见 `docs/task-plan-v1.md`。
+在 V1 的本地 Idea、Task、手动计划与专注数据上落地产品方案阶段 C「个人规划」：
 
-包含：
+1. **时间规则与容量**：每周每天单独设置可用工作时间、休息缓冲、当日上限；计划页显示周可用分钟、已安排分钟、剩余容量与超载原因。
+2. **重复事项**：日 / 工作日 / 每周规则，单次实例可单独覆盖或取消；归档规则只清未来未完成任务。
+3. **可行性与排期**：确定性本地算法按优先级 / 截止压力 / 依赖就绪生成候选；不可行时给出稳定原因，不覆盖固定块。
+4. **只读日历忙碌时间**：用户在「我的」页主动开启后方请求 `READ_CALENDAR`；无权限 / 无日历 / 关闭集成都可恢复，本地排期不依赖日历服务。
+5. **排期草案、解释与应用**：计划页可生成 / 刷新草案；预览不写计划；只有用户应用后才保存；重复应用同一草案幂等；冲突时保持原计划完整。
+6. **专注与计划回顾**：以真实的 `FocusSession` 为数据，汇总每日 / 每周计划与实际投入；不读取应用使用情况，不贴分心标签。
+7. **Room v2 → v3 迁移**：每次发布都附带显式 SQL 迁移，不再使用 `fallbackToDestructiveMigration()`。
+
+详见 [`docs/task-plan-v2.md`](docs/task-plan-v2.md) 与最终回归证据 [`docs/test-report-v2.md`](docs/test-report-v2.md)。V1 的范围与测试历史保留在 [`docs/task-plan-v1.md`](docs/task-plan-v1.md) 与 [`docs/test-report-v1.md`](docs/test-report-v1.md)。
+
+## 范围
+
+参见 `docs/task-plan-v1.md` 与 `docs/task-plan-v2.md`。
+
+V1 包含：
 
 1. 现在 / 闪念 / 计划 / 我的 四页 + 共享底部导航与语音胶囊。
 2. Idea 与 Task 的本地增删改查；Idea 可显式转 Task 并保留来源。
@@ -68,17 +82,14 @@ sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
 API 34 AVD 推荐使用 `Pixel_3a_API_34_extension_level_7_arm64-v8a`（已在本机验证），ADB 序列号 `emulator-5554`。如果只连接真机，请确保只有一个设备暴露给 ADB，否则 Gradle 会把用例同时下发，可能被 `:app:connectedDebugAndroidTest` 报告为重复运行。
 
-最终的测试结果、覆盖范围与一次性 `SnapshotStateObserver` 事件纪要见 [`docs/test-report-v1.md`](docs/test-report-v1.md)。当前套件零 `@Ignore`、零失败、零跳过。
+最终的测试结果、覆盖范围与一次性 `SnapshotStateObserver` 事件纪要见 [`docs/test-report-v1.md`](docs/test-report-v1.md)。V2 自动化测试证据与覆盖范围见 [`docs/test-report-v2.md`](docs/test-report-v2.md)。当前套件零 `@Ignore`、零跳过、零失败，合计 38 条 JVM 单元 + 72 条设备端集成 = 110 条；V2 实施期间由可控回归暴露的 2 个 `PlannerEngine` 生产 bug 已修复并通过原始断言回归（详见 V2 测试报告）。
 
 ## 权限
 
-应用清单里只声明了一个权限：`android.permission.RECORD_AUDIO`。
+- V1 录音：`android.permission.RECORD_AUDIO`，仅在用户主动点录音胶囊时按需触发。拒绝时录入弹层显示「需要麦克风权限才能录音」并提示去系统设置授权；失败时录音片段会从磁盘上删除，弹层展示「录音失败，原文件已删除」。
+- V2 日历：清单里**仅**声明 `android.permission.READ_CALENDAR`，且**不**声明 `WRITE_CALENDAR`。`READ_CALENDAR` 在用户主动开启「我的 → 只读日历忙碌时间」开关后由系统弹窗申请；拒绝时本地排期照常工作。V2 测试套件里有专门的 JVM 用例在合并后的清单里寻找这两条事实，避免漂移。
 
-- 拒绝时：录入弹层会显示「需要麦克风权限才能录音」，并提示去系统设置授权。
-- 失败时：录音片段会从磁盘上删除，弹层展示「录音失败，原文件已删除」，不会留下「假成功」状态。
-- 保存后：在「闪念」详情里能看到录音文件名；删除 Idea 时同步清理磁盘文件。
-
-> V1 不申请存储、定位、通知或前台服务权限。
+> V1/V2 不申请存储、定位、通知、互联网、前台服务、录音之外的其他运行时权限。
 
 ## 架构
 
@@ -87,22 +98,29 @@ app/src/main/java/com/yinian/android
 ├── YinianApp.kt              # Application；构造容器，触发首次种子数据
 ├── MainActivity.kt           # Compose 入口；按主题设置根
 ├── audio/AudioRecorder.kt    # MediaRecorder 包装；保证失败时不留垃圾文件
+├── calendar/CalendarBusyReader.kt  # V2 只读 CalendarContract.Instances 适配器
 ├── data/
 │   ├── AppContainer.kt       # 简单 DI
-│   ├── SeedInitializer.kt    # 首次启动写入示例数据
-│   ├── db/AppDatabase.kt     # Room
-│   ├── dao/Daos.kt           # Flow + suspend 查询
-│   ├── entity/Entities.kt    # Idea / Task / Relation / TimeBlock / FocusSession
-│   ├── prefs/PrefsRepository # DataStore（主题/工作时段/默认专注/自动化/ASR）
-│   └── repo/YinianRepository # 业务命令 + 启发式推荐 + 依赖校验
+│   ├── SeedInitializer.kt    # 首次启动写入示例数据 + 默认每周工作时间
+│   ├── db/AppDatabase.kt     # Room v3 + MIGRATION_2_3
+│   ├── dao/Daos.kt           # Flow + suspend 查询（V1 + V2 实体）
+│   ├── entity/Entities.kt    # Idea / Task / Relation / TimeBlock / FocusSession + V2
+│   │                         # WorkPolicy / RecurringRule / RecurringInstance / ScheduleDraft
+│   ├── prefs/PrefsRepository # DataStore（主题/工作时段/默认专注/自动化/ASR/V2 日历集成开关）
+│   └── repo/YinianRepository # 业务命令 + 启发式推荐 + V2 排期草案/应用 + 重复规则物化
+├── planner/                  # V2 纯 Kotlin 确定性算法（Android-free，便于 JVM 单元测试）
+│   ├── PlannerTypes.kt       # PlanItem / Placement / BusyInterval / DayWindow
+│   ├── PlannerEngine.kt      # 评分 + 按 FreeInterval 贪心放置 + 跨天 carry-over
+│   └── RecurringGenerator.kt # daily / weekday / weekly 实例生成
 ├── ui/
 │   ├── theme/                # 颜色、字体、形状（v4 浅/深色）
 │   ├── common/               # SoftCard / BottomNav / CaptureDock / GrooveRow / PillBadge
 │   ├── nav/RootScaffold      # 顶层布局
 │   ├── now/NowScreen         # 现在
 │   ├── ideas/IdeasScreen     # 闪念
-│   ├── plan/PlanScreen       # 计划
-│   ├── me/MeScreen           # 我的
+│   ├── plan/PlanScreen       # 计划（V2 增加「本周容量」卡 + 「生成排期草案」）
+│   ├── me/MeScreen           # 我的（V2 增加「每周工作规则」/「重复规则」/只读日历/回顾）
+│   ├── review/FocusReviewDialog  # V2 计划 vs 实际回顾
 │   ├── tasks/TaskEditorDialog # 任务编辑器（新建 / 编辑 / 依赖）
 │   └── capture/CaptureSheet  # 文本 + 录音
 └── util/DateUtil.kt

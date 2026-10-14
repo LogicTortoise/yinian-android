@@ -1,15 +1,26 @@
 package com.yinian.android.data.repo
 
+import com.yinian.android.audio.AudioRecorder
+import com.yinian.android.calendar.CalendarBusyReader
 import com.yinian.android.data.dao.FocusDao
 import com.yinian.android.data.dao.IdeaDao
+import com.yinian.android.data.dao.RecurringInstanceDao
+import com.yinian.android.data.dao.RecurringRuleDao
 import com.yinian.android.data.dao.RelationDao
+import com.yinian.android.data.dao.ScheduleDraftDao
 import com.yinian.android.data.dao.TaskDao
 import com.yinian.android.data.dao.TimeBlockDao
+import com.yinian.android.data.dao.WorkPolicyDao
 import com.yinian.android.data.entity.FocusSessionEntity
 import com.yinian.android.data.entity.IdeaEntity
+import com.yinian.android.data.entity.RecurringInstanceEntity
+import com.yinian.android.data.entity.RecurringRuleEntity
 import com.yinian.android.data.entity.RelationEntity
+import com.yinian.android.data.entity.ScheduleDraftEntity
 import com.yinian.android.data.entity.TaskEntity
 import com.yinian.android.data.entity.TimeBlockEntity
+import com.yinian.android.data.entity.WorkPolicyEntity
+import com.yinian.android.data.prefs.PrefsRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
@@ -50,8 +61,7 @@ internal class FakeTaskDao : TaskDao {
     override fun observeAll(): Flow<List<TaskEntity>> = items
     override fun observeActive(): Flow<List<TaskEntity>> =
         items.map { list -> list.filter { it.status != "archived" } }
-    override fun observeById(id: String): Flow<TaskEntity?> =
-        items.map { list -> list.firstOrNull { it.id == id } }
+    override fun observeById(id: String): Flow<TaskEntity?> = items.map { list -> list.firstOrNull { it.id == id } }
     override suspend fun upsert(task: TaskEntity) {
         byId[task.id] = task
         items.value = byId.values.sortedWith(compareBy({ it.status }, { it.priority }, { -it.createdAt }))
@@ -66,6 +76,12 @@ internal class FakeTaskDao : TaskDao {
         byId.remove(id)
         items.value = byId.values.sortedWith(compareBy({ it.status }, { it.priority }, { -it.createdAt }))
     }
+    override suspend fun listByRecurringRule(ruleId: String): List<TaskEntity> =
+        byId.values.filter { it.recurringRuleId == ruleId }
+    override suspend fun getById(id: String): TaskEntity? = byId[id]
+    override suspend fun getAllSnapshot(): List<TaskEntity> = byId.values.toList()
+    override suspend fun getAllOpenSnapshot(): List<TaskEntity> =
+        byId.values.filter { it.status != "archived" }
 }
 
 internal class FakeRelationDao : RelationDao {
@@ -114,6 +130,14 @@ internal class FakeTimeBlockDao : TimeBlockDao {
         toRemove.forEach { byId.remove(it) }
         items.value = byId.values.sortedBy { it.startAt }
     }
+    override suspend fun listByRecurringRule(ruleId: String): List<TimeBlockEntity> =
+        byId.values.filter { it.recurringRuleId == ruleId }
+    override suspend fun listByDraft(draftId: String): List<TimeBlockEntity> =
+        byId.values.filter { it.draftId == draftId }
+    override suspend fun listInWindow(start: Long, end: Long): List<TimeBlockEntity> =
+        byId.values.filter { it.startAt < end && it.endAt > start }.sortedBy { it.startAt }
+    override suspend fun listByTask(taskId: String): List<TimeBlockEntity> =
+        byId.values.filter { it.taskId == taskId }.sortedBy { it.startAt }
 }
 
 internal class FakeFocusDao : FocusDao {
@@ -147,3 +171,77 @@ internal class FakeFocusDao : FocusDao {
         items.value = byId.values.sortedByDescending { it.startedAt }
     }
 }
+
+internal class FakeWorkPolicyDao : WorkPolicyDao {
+    private val items = MutableStateFlow<List<WorkPolicyEntity>>(emptyList())
+    private val byDow = linkedMapOf<Int, WorkPolicyEntity>()
+
+    override fun observeAll(): Flow<List<WorkPolicyEntity>> = items
+    override suspend fun all(): List<WorkPolicyEntity> = items.value
+    override suspend fun upsert(policy: WorkPolicyEntity) {
+        byDow[policy.dayOfWeek] = policy
+        items.value = byDow.values.sortedBy { it.dayOfWeek }
+    }
+    override suspend fun deleteAll() {
+        byDow.clear()
+        items.value = emptyList()
+    }
+}
+
+internal class FakeRecurringRuleDao : RecurringRuleDao {
+    private val items = MutableStateFlow<List<RecurringRuleEntity>>(emptyList())
+    private val byId = mutableMapOf<String, RecurringRuleEntity>()
+
+    override fun observeActive(): Flow<List<RecurringRuleEntity>> =
+        items.map { list -> list.filter { !it.archived }.sortedBy { it.createdAt } }
+    override fun observeAll(): Flow<List<RecurringRuleEntity>> = items
+    override suspend fun all(): List<RecurringRuleEntity> = byId.values.toList()
+    override suspend fun getById(id: String): RecurringRuleEntity? = byId[id]
+    override suspend fun upsert(rule: RecurringRuleEntity) {
+        byId[rule.id] = rule
+        items.value = byId.values.sortedBy { it.createdAt }
+    }
+    override suspend fun setArchived(id: String, archived: Boolean, now: Long) {
+        val existing = byId[id] ?: return
+        byId[id] = existing.copy(archived = archived, updatedAt = now)
+        items.value = byId.values.sortedBy { it.createdAt }
+    }
+}
+
+internal class FakeRecurringInstanceDao : RecurringInstanceDao {
+    private val map = mutableMapOf<Pair<String, String>, RecurringInstanceEntity>()
+
+    override suspend fun get(ruleId: String, dayKey: String): RecurringInstanceEntity? =
+        map[ruleId to dayKey]
+    override suspend fun listForRule(ruleId: String): List<RecurringInstanceEntity> =
+        map.entries.filter { it.key.first == ruleId }.map { it.value }
+    override suspend fun upsert(instance: RecurringInstanceEntity) {
+        map[instance.ruleId to instance.dayKey] = instance
+    }
+    override suspend fun delete(ruleId: String, dayKey: String) {
+        map.remove(ruleId to dayKey)
+    }
+}
+
+internal class FakeScheduleDraftDao : ScheduleDraftDao {
+    private val items = MutableStateFlow<List<ScheduleDraftEntity>>(emptyList())
+    private val byId = mutableMapOf<String, ScheduleDraftEntity>()
+
+    override fun observeAll(): Flow<List<ScheduleDraftEntity>> =
+        items.map { list -> list.sortedByDescending { it.createdAt } }
+    override suspend fun getById(id: String): ScheduleDraftEntity? = byId[id]
+    override suspend fun findByFingerprint(fp: String): ScheduleDraftEntity? =
+        byId.values.firstOrNull { it.fingerprint == fp }
+    override suspend fun upsert(draft: ScheduleDraftEntity) {
+        byId[draft.id] = draft
+        items.value = byId.values.toList()
+    }
+    override suspend fun markApplied(id: String, appliedAt: Long) {
+        val existing = byId[id] ?: return
+        byId[id] = existing.copy(appliedAt = appliedAt)
+        items.value = byId.values.toList()
+    }
+}
+
+// Repository factory lives in `RepoFactory.kt`; keep only the fake DAO
+// implementations here.

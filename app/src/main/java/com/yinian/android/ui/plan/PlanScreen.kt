@@ -20,10 +20,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -33,6 +35,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,11 +50,17 @@ import androidx.compose.ui.unit.dp
 import com.yinian.android.data.AppContainer
 import com.yinian.android.data.entity.TaskEntity
 import com.yinian.android.data.entity.TimeBlockEntity
+import com.yinian.android.data.repo.ApplyResult
+import com.yinian.android.data.repo.CapacitySnapshot
+import com.yinian.android.data.repo.ScheduleDraft
+import com.yinian.android.data.repo.YinianRepository
+import com.yinian.android.planner.Placement
+import com.yinian.android.planner.UnscheduledReason
 import com.yinian.android.ui.common.PillBadge
 import com.yinian.android.ui.common.SoftCard
 import com.yinian.android.util.DateUtil
 import kotlinx.coroutines.launch
-import java.util.Calendar
+import java.time.LocalDate
 
 @Composable
 fun PlanScreen(container: AppContainer) {
@@ -62,10 +71,13 @@ fun PlanScreen(container: AppContainer) {
     val (weekStart, weekEnd) = remember(now) { DateUtil.weekRange(now) }
     val blocks by repo.observeTimeBlocksBetween(weekStart, weekEnd).collectAsState(initial = emptyList())
     val dayBlocks = blocks.filter { it.startAt >= selectedDay && it.startAt < selectedDay + 24L * 3600_000L }
+    val capacity by produceCapacity(repo) { repo.computeWeekCapacity(now) }
+    val draftHolder = remember { mutableStateOf<ScheduleDraft?>(null) }
     val scope = rememberCoroutineScope()
     var addBlockFor by remember { mutableStateOf(false) }
     var blockConflict by remember { mutableStateOf<TimeBlockEntity?>(null) }
     var blockError by remember { mutableStateOf<String?>(null) }
+    var applyMessage by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier
@@ -82,6 +94,8 @@ fun PlanScreen(container: AppContainer) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
+        CapacityCard(capacity)
+        Spacer(Modifier.height(12.dp))
         WeekStrip(
             weekStart = weekStart,
             selected = selectedDay,
@@ -91,6 +105,18 @@ fun PlanScreen(container: AppContainer) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(DateUtil.dayLabel(selectedDay), style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.weight(1f))
+            TextButton(onClick = {
+                scope.launch {
+                    val today = LocalDate.now()
+                    val draft = repo.buildScheduleDraft(today, today.plusDays(7))
+                    draftHolder.value = draft
+                    applyMessage = "已生成 ${draft.result.placements.size} 条建议、${draft.result.unscheduled.size} 项未安排。"
+                }
+            }) {
+                Icon(Icons.Outlined.AutoAwesome, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("生成排期草案")
+            }
             TextButton(onClick = { addBlockFor = true }) {
                 Icon(Icons.Outlined.Add, contentDescription = null)
                 Spacer(Modifier.width(4.dp))
@@ -154,8 +180,6 @@ fun PlanScreen(container: AppContainer) {
                             blockError = null
                         }
                         is com.yinian.android.data.repo.AddBlockResult.ConflictsWithFixed -> {
-                            // Keep the dialog open so the user can pick a different slot.
-                            // The fixed block stays intact in storage.
                             blockConflict = res.block
                             blockError = null
                         }
@@ -168,6 +192,87 @@ fun PlanScreen(container: AppContainer) {
             }
         )
     }
+
+    val draft = draftHolder.value
+    if (draft != null) {
+        DraftReviewDialog(
+            draft = draft,
+            tasksById = tasks.associateBy { it.id },
+            applyMessage = applyMessage,
+            onDismiss = { draftHolder.value = null; applyMessage = null },
+            onApply = {
+                scope.launch {
+                    val res = repo.applyScheduleDraft(draft)
+                    applyMessage = when (res) {
+                        is ApplyResult.Applied -> "已应用 ${res.placedBlocks} 个时间块。"
+                        is ApplyResult.NoOp -> res.reason
+                        is ApplyResult.Conflict -> "与「${res.fixedBlockTitle}」冲突，未应用。"
+                    }
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun produceCapacity(
+    @Suppress("UNUSED_PARAMETER") repo: YinianRepository,
+    block: suspend () -> CapacitySnapshot
+): androidx.compose.runtime.State<CapacitySnapshot?> {
+    val state = remember { androidx.compose.runtime.mutableStateOf<CapacitySnapshot?>(null) }
+    LaunchedEffect(Unit) {
+        state.value = block()
+    }
+    return state
+}
+
+@Composable
+private fun CapacityCard(capacity: CapacitySnapshot?) {
+    SoftCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 18.dp, edgeThickness = 2.dp) {
+        Text("本周容量", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(4.dp))
+        if (capacity == null) {
+            Text(
+                "加载中…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            val availableMin = capacity.totalAvailable
+            val scheduledMin = capacity.totalScheduled
+            val remaining = (capacity.totalCap - scheduledMin).coerceAtLeast(0)
+            Text(
+                "可用 ${formatMinutes(availableMin)} · 已安排 ${formatMinutes(scheduledMin)} · 剩余 ${formatMinutes(remaining)}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            if (scheduledMin > capacity.totalCap && capacity.totalCap > 0) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "已超出日上限 ${formatMinutes(scheduledMin - capacity.totalCap)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                capacity.days.take(7).forEach { d ->
+                    val tone = when {
+                        d.capMinutes == 0 -> "休"
+                        d.scheduledMinutes > d.capMinutes -> "超"
+                        else -> "${(d.scheduledMinutes * 100 / d.capMinutes.coerceAtLeast(1))}"
+                    }
+                    PillBadge("${d.dayKey.substringAfterLast('-')} $tone")
+                }
+            }
+        }
+    }
+}
+
+private fun formatMinutes(min: Int): String {
+    if (min <= 0) return "0 分"
+    val h = min / 60
+    val m = min % 60
+    return if (h > 0) "${h}小时${m}分" else "${m}分"
 }
 
 @Composable
@@ -226,6 +331,12 @@ private fun BlockRow(block: TimeBlockEntity, onRemove: () -> Unit) {
             if (block.fixed) {
                 PillBadge("固定", background = MaterialTheme.colorScheme.tertiaryContainer, contentColor = MaterialTheme.colorScheme.tertiary)
                 Spacer(Modifier.width(6.dp))
+            } else if (block.source == "plan") {
+                PillBadge("排期草案", background = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)
+                Spacer(Modifier.width(6.dp))
+            } else if (block.source == "recurring") {
+                PillBadge("重复", background = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)
+                Spacer(Modifier.width(6.dp))
             }
             IconButton(onClick = onRemove) {
                 Icon(Icons.Outlined.Close, contentDescription = "移除时间块")
@@ -244,6 +355,83 @@ private fun UnscheduledTaskRow(task: TaskEntity) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+@Composable
+private fun DraftReviewDialog(
+    draft: ScheduleDraft,
+    tasksById: Map<String, TaskEntity>,
+    applyMessage: String?,
+    onDismiss: () -> Unit,
+    onApply: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onApply) { Text("应用") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("放弃") } },
+        title = { Text("排期草案") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                Text(
+                    "本草案由本地规则生成，应用前请检查每条建议。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                if (draft.result.placements.isEmpty()) {
+                    Text("没有可安排的项。", style = MaterialTheme.typography.bodySmall)
+                }
+                draft.result.placements.forEach { p ->
+                    DraftPlacementRow(p, tasksById)
+                }
+                if (draft.result.unscheduled.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("未安排", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(4.dp))
+                    draft.result.unscheduled.forEach { u ->
+                        DraftUnscheduledRow(u)
+                    }
+                }
+                applyMessage?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun DraftPlacementRow(p: Placement.Scheduled, tasksById: Map<String, TaskEntity>) {
+    val title = tasksById[p.itemId]?.title ?: "安排"
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+        PillBadge(DateUtil.timeLabel(p.startMs))
+        Spacer(Modifier.width(6.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(p.reason, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+private fun unscheduledReasonText(reason: UnscheduledReason): String = when (reason) {
+    UnscheduledReason.BlockedByDependencies -> "依赖未完成"
+    UnscheduledReason.OutsideAvailableHours -> "没有合适的工作时段"
+    UnscheduledReason.DailyCapacityReached -> "本日容量已满"
+    UnscheduledReason.EstimateTooLong -> "估时超过可用时段"
+    is UnscheduledReason.ConflictsWith -> "与已有安排冲突"
+}
+
+@Composable
+private fun DraftUnscheduledRow(u: Placement.Unscheduled) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(u.title, style = MaterialTheme.typography.bodyMedium)
+            Text(unscheduledReasonText(u.reason), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
         }
     }
 }
