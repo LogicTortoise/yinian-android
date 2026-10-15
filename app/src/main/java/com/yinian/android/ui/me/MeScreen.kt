@@ -1,13 +1,7 @@
 package com.yinian.android.ui.me
 
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,15 +11,20 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.SelfImprovement
@@ -39,7 +38,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,12 +46,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import com.yinian.android.data.AppContainer
+import com.yinian.android.data.entity.RecurringRuleEntity
 import com.yinian.android.data.entity.WorkPolicyEntity
 import com.yinian.android.data.prefs.PrefsRepository
 import com.yinian.android.ui.common.PillBadge
@@ -72,10 +69,7 @@ fun MeScreen(
     val workEnd by prefs.workEndMin.collectAsState(initial = 18 * 60)
     val focusDefault by prefs.focusDefaultMin.collectAsState(initial = 25)
     val autoSuggest by prefs.autoSuggest.collectAsState(initial = false)
-    val calendarEnabled by prefs.calendarEnabled.collectAsState(initial = false)
-    val calendarGranted by prefs.calendarGranted.collectAsState(initial = false)
     val repo = container.repository
-    val context = LocalContext.current
     val workPolicies by repo.observeWorkPolicies().collectAsState(initial = emptyList())
     val rules by repo.observeActiveRecurringRules().collectAsState(initial = emptyList())
     val ideasCount by repo.observeIdeas().collectAsState(initial = emptyList())
@@ -90,17 +84,13 @@ fun MeScreen(
     var showRecurringDialog by remember { mutableStateOf(false) }
     var showReviewDialog by remember { mutableStateOf(false) }
 
-    val calendarLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        scope.launch { prefs.setCalendarGranted(granted) }
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.statusBars)
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 18.dp)
+            .windowInsetsPadding(WindowInsets.navigationBars)
     ) {
         Spacer(Modifier.height(20.dp))
         Text("我的", style = MaterialTheme.typography.displaySmall)
@@ -196,40 +186,10 @@ fun MeScreen(
                 onChange = { scope.launch { prefs.setAutoSuggest(it) } }
             )
             Divider()
-            // ASR is not configured in V1. We expose a state row (not a switch) so the
+            // ASR is not configured in V1/V2. We expose a state row (not a switch) so the
             // user can see the current state without being misled into thinking a toggle
             // would activate speech recognition.
             AsrStatusRow()
-            Divider()
-            SwitchRow(
-                title = "只读日历忙碌时间",
-                description = if (calendarEnabled && calendarGranted) {
-                    "已开启。系统日历里的事件会被视为忙碌，不会写入。"
-                } else if (calendarEnabled && !calendarGranted) {
-                    "未授权。日历开关仍可保留，不会写入日历。"
-                } else {
-                    "关闭后只使用本地计划；授权可随时撤销。"
-                },
-                checked = calendarEnabled && calendarGranted,
-                onChange = { enabled ->
-                    scope.launch {
-                        if (enabled) {
-                            val granted = ContextCompat.checkSelfPermission(
-                                context, Manifest.permission.READ_CALENDAR
-                            ) == PackageManager.PERMISSION_GRANTED
-                            if (granted) {
-                                prefs.setCalendarGranted(true)
-                                prefs.setCalendarEnabled(true)
-                            } else {
-                                prefs.setCalendarEnabled(true)
-                                calendarLauncher.launch(Manifest.permission.READ_CALENDAR)
-                            }
-                        } else {
-                            prefs.setCalendarEnabled(false)
-                        }
-                    }
-                }
-            )
             Divider()
             SettingRow(
                 title = "查看当前能力",
@@ -242,12 +202,14 @@ fun MeScreen(
 
         GroupCard(title = "回顾") {
             SettingRow(
-                title = "本周专注回顾",
-                value = "本周实际 / 计划容量",
+                title = "专注回顾",
+                value = "日 / 周回顾 · 计划完成率",
                 icon = Icons.Outlined.SelfImprovement,
                 onClick = { showReviewDialog = true }
             )
         }
+        // Bottom spacer above the capture dock + bottom nav so the last
+        // SettingRow stays reachable even when the capture dock is visible.
         Spacer(Modifier.height(140.dp))
     }
 
@@ -292,7 +254,8 @@ fun MeScreen(
                         "跨设备同步与账号",
                         "服务器排期 / MCP 接入",
                         "可靠定时提醒（依赖系统能力）",
-                        "应用使用情况采集"
+                        "应用使用情况采集",
+                        "Android 系统日历集成（V2-ME 已移除）"
                     ).forEach { Text("· $it", style = MaterialTheme.typography.bodySmall) }
                 }
             }
@@ -403,7 +366,7 @@ private fun AsrStatusRow() {
         Column(modifier = Modifier.weight(1f)) {
             Text("语音转写（云端 ASR）", style = MaterialTheme.typography.bodyLarge)
             Text(
-                "V1 没有接入 ASR 服务商。打开偏好不会激活转写；录音仍会保存，应用不会伪造转写文字。",
+                "V1/V2 没有接入 ASR 服务商。打开偏好不会激活转写；录音仍会保存，应用不会伪造转写文字。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -539,7 +502,7 @@ private fun WorkPoliciesDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
         title = { Text("每周工作规则") },
         text = {
-            Column(modifier = Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     "每天单独配置：可用时段、休息缓冲、当日上限。休息日留为关闭即可。",
                     style = MaterialTheme.typography.bodySmall,
@@ -597,15 +560,19 @@ private fun DayRow(label: String, policy: WorkPolicyEntity, onChange: (WorkPolic
 }
 
 /**
- * Recurring-rule list and quick editor. The dialog lets the user add a
- * daily / weekday / weekly rule that immediately becomes a candidate for
- * the planner. Existing rules can be archived (which stops future instance
- * generation but keeps history).
+ * V2-ME: recurring-rule list, add dialog and per-rule edit dialog.
+ *
+ * Existing rules expose:
+ *  - "编辑": open [RecurringRuleEditDialog] with a "应用到未来未完成的实例" switch.
+ *  - "归档": archive the rule. Past instances are preserved; future open
+ *    instances are dropped.
+ *
+ * The add form is unchanged from V2-CAL.
  */
 @Composable
 private fun RecurringRulesDialog(
     container: AppContainer,
-    initial: List<com.yinian.android.data.entity.RecurringRuleEntity>,
+    initial: List<RecurringRuleEntity>,
     onDismiss: () -> Unit
 ) {
     val repo = container.repository
@@ -615,6 +582,7 @@ private fun RecurringRulesDialog(
     var priority by remember { mutableStateOf(3) }
     var kind by remember { mutableStateOf("daily") }
     var byDayMask by remember { mutableStateOf(0b11111) } // Mon..Fri
+    var editing by remember { mutableStateOf<RecurringRuleEntity?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -641,7 +609,7 @@ private fun RecurringRulesDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("完成") } },
         title = { Text("重复规则") },
         text = {
-            Column(modifier = Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 if (initial.isEmpty()) {
                     Text(
                         "还没有规则。下面新增一个后，V2 排期会自动按规则生成实例。",
@@ -659,9 +627,18 @@ private fun RecurringRulesDialog(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            TextButton(onClick = { editing = rule }) {
+                                Icon(Icons.Outlined.Edit, contentDescription = null)
+                                Spacer(Modifier.width(2.dp))
+                                Text("编辑")
+                            }
                             TextButton(onClick = {
                                 scope.launch { repo.archiveRecurringRule(rule.id) }
-                            }) { Text("归档") }
+                            }) {
+                                Icon(Icons.Outlined.Archive, contentDescription = null)
+                                Spacer(Modifier.width(2.dp))
+                                Text("归档")
+                            }
                         }
                     }
                 }
@@ -696,6 +673,161 @@ private fun RecurringRulesDialog(
                             }
                         }
                     }
+                }
+            }
+        }
+    )
+
+    val editingRule = editing
+    if (editingRule != null) {
+        RecurringRuleEditDialog(
+            rule = editingRule,
+            onDismiss = { editing = null },
+            onConfirm = { titleValue, estMin, prio, knd, mask, horizon, applyToFuture ->
+                scope.launch {
+                    repo.updateRecurringRule(
+                        ruleId = editingRule.id,
+                        title = titleValue,
+                        estimateMinutes = estMin,
+                        priority = prio,
+                        kind = knd,
+                        byDayMask = mask,
+                        horizonDays = horizon,
+                        applyToFutureOpenInstances = applyToFuture
+                    )
+                    editing = null
+                }
+            }
+        )
+    }
+}
+
+/**
+ * V2-ME: edit an existing recurring rule.
+ *
+ * - `applyToFutureOpenInstances = false`: only the rule row is rewritten.
+ *   Existing open future tasks keep their old title / estimate until the
+ *   next materialise pass picks them up. The user's history (completed,
+ *   archived, one-off-overridden) is never touched.
+ * - `applyToFutureOpenInstances = true`: future open instances are
+ *   re-derived from the new rule; days the rule no longer emits have their
+ *   open tasks archived. Completed and one-off-cancelled instances are
+ *   preserved.
+ */
+@Composable
+private fun RecurringRuleEditDialog(
+    rule: RecurringRuleEntity,
+    onDismiss: () -> Unit,
+    onConfirm: (
+        title: String,
+        estimateMinutes: Int,
+        priority: Int,
+        kind: String,
+        byDayMask: Int,
+        horizonDays: Int,
+        applyToFutureOpenInstances: Boolean
+    ) -> Unit
+) {
+    var title by remember { mutableStateOf(rule.title) }
+    var estimateText by remember { mutableStateOf(rule.estimateMinutes.toString()) }
+    var priority by remember { mutableStateOf(rule.priority) }
+    var kind by remember { mutableStateOf(rule.kind) }
+    var byDayMask by remember { mutableStateOf(rule.byDayMask) }
+    var horizonText by remember { mutableStateOf(rule.horizonDays.toString()) }
+    var applyToFuture by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                enabled = title.isNotBlank(),
+                onClick = {
+                    val estimate = estimateText.toIntOrNull()?.coerceAtLeast(0) ?: rule.estimateMinutes
+                    val horizon = horizonText.toIntOrNull()?.coerceAtLeast(1) ?: rule.horizonDays
+                    onConfirm(
+                        title.trim(),
+                        estimate,
+                        priority.coerceIn(1, 5),
+                        kind,
+                        byDayMask,
+                        horizon,
+                        applyToFuture
+                    )
+                }
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        title = { Text("编辑重复规则") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "已生成的历史实例不会被静默改写。下方选项仅影响未开始且未手动修改的实例。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("标题") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = estimateText,
+                    onValueChange = { estimateText = it.filter { c -> c.isDigit() }.take(3) },
+                    label = { Text("估时（分钟）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = horizonText,
+                    onValueChange = { horizonText = it.filter { c -> c.isDigit() }.take(3) },
+                    label = { Text("提前生成天数") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("优先级")
+                    for (p in 1..5) {
+                        TextButton(onClick = { priority = p }) {
+                            Text(if (priority == p) "✓ $p" else "$p")
+                        }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("频率")
+                    TextButton(onClick = { kind = "daily" }) { Text(if (kind == "daily") "✓ 每天" else "每天") }
+                    TextButton(onClick = { kind = "weekday" }) { Text(if (kind == "weekday") "✓ 工作日" else "工作日") }
+                    TextButton(onClick = { kind = "weekly" }) { Text(if (kind == "weekly") "✓ 每周" else "每周") }
+                }
+                if (kind == "weekly") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        listOf("一", "二", "三", "四", "五", "六", "日").forEachIndexed { idx, label ->
+                            val bit = 1 shl idx
+                            TextButton(onClick = { byDayMask = byDayMask xor bit }) {
+                                Text(if (byDayMask and bit != 0) "✓ $label" else label)
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("应用到未来未完成的实例", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "若关闭：只更新规则本身；若开启：同步修改未来未开始且未手动修改的实例；已完成、已归档、已单独编辑的实例不会被改动。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = applyToFuture, onCheckedChange = { applyToFuture = it })
                 }
             }
         }

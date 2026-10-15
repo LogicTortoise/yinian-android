@@ -92,6 +92,46 @@ data class FocusSessionEntity(
 )
 
 /**
+ * V2-ME: one contiguous run/pause interval inside a focus session.
+ *
+ * Persisted from V2-ME onwards so daily/cross-midnight focus totals can be
+ * computed exactly from the segment history. Legacy V3 sessions (which only
+ * have [FocusSessionEntity.startedAt]/[pausedMs]/[activeStartedAt]) are
+ * attributed using a documented fallback rule at read time — see
+ * [com.yinian.android.data.repo.FocusAttribution].
+ *
+ * - `kind = "active"`: the user was focusing during `[startedAt, endedAt]`.
+ *   These rows are summed to compute "actual focus minutes".
+ * - `kind = "paused"`: the session was paused during `[startedAt, endedAt]`.
+ *   Paused segments are NOT summed and exist only so review screens can show
+ *   the pause history if they want to.
+ * - `endedAt = null` means the segment is still open; the live segment ends
+ *   at the wall-clock "now" used by the attribution function.
+ */
+@Entity(
+    tableName = "focus_session_segments",
+    foreignKeys = [
+        androidx.room.ForeignKey(
+            entity = FocusSessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sessionId"],
+            onDelete = androidx.room.ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        androidx.room.Index("sessionId"),
+        androidx.room.Index("startedAt")
+    ]
+)
+data class FocusSessionSegmentEntity(
+    @PrimaryKey val id: String,
+    val sessionId: String,
+    val kind: String,              // "active" | "paused"
+    val startedAt: Long,
+    val endedAt: Long? = null
+)
+
+/**
  * V2: per-weekday work-hours policy. One row per day-of-week (1..7, ISO).
  *
  * - `enabled`: whether this weekday is a working day.

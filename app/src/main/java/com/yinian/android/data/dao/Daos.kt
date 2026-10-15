@@ -7,6 +7,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import com.yinian.android.data.entity.FocusSessionEntity
+import com.yinian.android.data.entity.FocusSessionSegmentEntity
 import com.yinian.android.data.entity.IdeaEntity
 import com.yinian.android.data.entity.RecurringInstanceEntity
 import com.yinian.android.data.entity.RecurringRuleEntity
@@ -180,6 +181,34 @@ interface FocusDao {
      */
     @Query("UPDATE focus_sessions SET status = :status, activeStartedAt = :activeStartedAt, endedAt = NULL WHERE id = :id")
     suspend fun applyResume(id: String, status: String, activeStartedAt: Long)
+}
+
+/**
+ * V2-ME: per-segment history for focus sessions. Inserted on every
+ * pause/resume transition so the focus review can attribute exact active
+ * minutes to the correct local date (including cross-midnight sessions).
+ *
+ * The DAO deliberately exposes both observe/all helpers and targeted
+ * insert/update operations; segment lifecycle is owned by
+ * [com.yinian.android.data.repo.YinianRepository].
+ */
+@Dao
+interface FocusSessionSegmentDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(segment: FocusSessionSegmentEntity)
+
+    /** Close a still-open segment by setting its `endedAt`. */
+    @Query("UPDATE focus_session_segments SET endedAt = :endedAt WHERE id = :id")
+    suspend fun close(id: String, endedAt: Long)
+
+    @Query("SELECT * FROM focus_session_segments WHERE sessionId = :sessionId ORDER BY startedAt ASC")
+    suspend fun listForSession(sessionId: String): List<FocusSessionSegmentEntity>
+
+    @Query("SELECT * FROM focus_session_segments ORDER BY startedAt ASC")
+    suspend fun all(): List<FocusSessionSegmentEntity>
+
+    @Query("SELECT * FROM focus_session_segments WHERE startedAt < :endMs AND (endedAt IS NULL OR endedAt > :startMs) ORDER BY startedAt ASC")
+    suspend fun listInWindow(startMs: Long, endMs: Long): List<FocusSessionSegmentEntity>
 }
 
 @Dao

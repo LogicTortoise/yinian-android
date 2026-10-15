@@ -1,8 +1,8 @@
 package com.yinian.android.data.repo
 
 import com.yinian.android.audio.AudioRecorder
-import com.yinian.android.calendar.CalendarBusyReader
 import com.yinian.android.data.dao.FocusDao
+import com.yinian.android.data.dao.FocusSessionSegmentDao
 import com.yinian.android.data.dao.IdeaDao
 import com.yinian.android.data.dao.RecurringInstanceDao
 import com.yinian.android.data.dao.RecurringRuleDao
@@ -12,6 +12,7 @@ import com.yinian.android.data.dao.TaskDao
 import com.yinian.android.data.dao.TimeBlockDao
 import com.yinian.android.data.dao.WorkPolicyDao
 import com.yinian.android.data.entity.FocusSessionEntity
+import com.yinian.android.data.entity.FocusSessionSegmentEntity
 import com.yinian.android.data.entity.IdeaEntity
 import com.yinian.android.data.entity.RecurringInstanceEntity
 import com.yinian.android.data.entity.RecurringRuleEntity
@@ -32,7 +33,6 @@ import com.yinian.android.planner.PlannerTime
 import com.yinian.android.planner.RecurringGenerator
 import com.yinian.android.planner.Zone
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import java.io.File
 import java.security.MessageDigest
 import java.time.Instant
@@ -46,13 +46,13 @@ class YinianRepository(
     private val relationDao: RelationDao,
     private val timeBlockDao: TimeBlockDao,
     private val focusDao: FocusDao,
+    private val focusSegmentDao: FocusSessionSegmentDao,
     private val workPolicyDao: WorkPolicyDao,
     private val recurringRuleDao: RecurringRuleDao,
     private val recurringInstanceDao: RecurringInstanceDao,
     private val scheduleDraftDao: ScheduleDraftDao,
     private val prefs: PrefsRepository,
-    val audioRecorder: AudioRecorder,
-    private val calendarBusyReader: CalendarBusyReader
+    val audioRecorder: AudioRecorder
 ) {
     // ---------- Ideas ----------
     fun observeIdeas(): Flow<List<IdeaEntity>> = ideaDao.observeActive()
@@ -240,6 +240,9 @@ class YinianRepository(
     fun observeActiveFocus(): Flow<FocusSessionEntity?> = focusDao.observeActive()
     fun observeAllFocus(): Flow<List<FocusSessionEntity>> = focusDao.observeAll()
 
+    /** V2-ME: one-shot pull of every focus session segment. */
+    suspend fun focusSegmentsSnapshot(): List<FocusSessionSegmentEntity> = focusSegmentDao.all()
+
     suspend fun startFocus(taskId: String?): FocusSessionEntity {
         val now = System.currentTimeMillis()
         val session = FocusSessionEntity(
@@ -252,6 +255,15 @@ class YinianRepository(
             status = "active"
         )
         focusDao.upsert(session)
+        focusSegmentDao.upsert(
+            FocusSessionSegmentEntity(
+                id = UUID.randomUUID().toString(),
+                sessionId = session.id,
+                kind = "active",
+                startedAt = now,
+                endedAt = null
+            )
+        )
         return session
     }
 
@@ -260,10 +272,33 @@ class YinianRepository(
         val current = currentFocus(id) ?: return
         val accumulated = current.pausedMs + activeSegmentMs(current, now)
         focusDao.applyPause(id, "paused", accumulated, null)
+        // Close the still-open active segment, then open a paused segment so
+        // the segment history mirrors the session row's status field.
+        closeOpenSegment(id, "active", now)
+        focusSegmentDao.upsert(
+            FocusSessionSegmentEntity(
+                id = UUID.randomUUID().toString(),
+                sessionId = id,
+                kind = "paused",
+                startedAt = now,
+                endedAt = null
+            )
+        )
     }
 
     suspend fun resumeFocus(id: String) {
-        focusDao.applyResume(id, "active", System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        focusDao.applyResume(id, "active", now)
+        closeOpenSegment(id, "paused", now)
+        focusSegmentDao.upsert(
+            FocusSessionSegmentEntity(
+                id = UUID.randomUUID().toString(),
+                sessionId = id,
+                kind = "active",
+                startedAt = now,
+                endedAt = null
+            )
+        )
     }
 
     suspend fun endFocus(id: String) {
@@ -271,10 +306,27 @@ class YinianRepository(
         val current = currentFocus(id)
         val accumulated = if (current != null) current.pausedMs + activeSegmentMs(current, now) else 0L
         focusDao.applyPause(id, "completed", accumulated, now)
+        // Closing the active segment is enough; completed sessions have no
+        // following paused segment.
+        closeOpenSegment(id, "active", now)
     }
 
     suspend fun cancelFocus(id: String) {
-        focusDao.applyPause(id, "cancelled", 0L, System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        focusDao.applyPause(id, "cancelled", 0L, now)
+        // Cancelled sessions are excluded from "实际投入" anyway. We still
+        // close any open segment so the segment history doesn't carry a row
+        // that's still flagged endedAt = NULL.
+        closeOpenSegment(id, "active", now)
+        closeOpenSegment(id, "paused", now)
+    }
+
+    private suspend fun closeOpenSegment(sessionId: String, kind: String, endedAt: Long) {
+        focusSegmentDao.listForSession(sessionId).forEach { seg ->
+            if (seg.kind == kind && seg.endedAt == null) {
+                focusSegmentDao.close(seg.id, endedAt)
+            }
+        }
     }
 
     private suspend fun currentFocus(id: String): FocusSessionEntity? =
@@ -406,17 +458,128 @@ class YinianRepository(
     suspend fun archiveRecurringRule(id: String) {
         val now = System.currentTimeMillis()
         recurringRuleDao.setArchived(id, true, now)
-        // Drop pending future instances; keep past instances intact so the
-        // user's history is preserved.
+        // Drop pending FUTURE instances only; keep today / past instances
+        // intact so the user's history is preserved. Future eligibility is
+        // driven by the local `instanceDate` day key — not `dueAt`, because
+        // generated instances commonly have no due date and we do not want
+        // to archive open historical instances by accident.
+        val zone = Zone.systemDefault()
+        val today = LocalDate.now(zone)
         val tasks = taskDao.listByRecurringRule(id)
-        val nowMs = System.currentTimeMillis()
         for (t in tasks) {
-            if (t.status == "open" && (t.dueAt == null || t.dueAt > nowMs)) {
-                archiveTask(t.id)
+            val dayKey = t.instanceDate ?: continue // not a generated instance
+            val instanceDate = runCatching { LocalDate.parse(dayKey) }.getOrNull() ?: continue
+            if (!instanceDate.isAfter(today)) continue // today or past — preserve
+            if (t.status != "open") continue // completed / already-archived — preserve
+            // Manually overridden or cancelled instances honour the override
+            // row as the source of truth; the rule archive must not touch
+            // them.
+            val override = recurringInstanceDao.get(id, dayKey)
+            if (override != null) continue
+            archiveTask(t.id)
+        }
+        // Same rule for blocks: only delete FUTURE recurring blocks. Blocks
+        // without an `instanceDate` (older V1/V2 rows that pre-date the V2
+        // block schema) are also dropped if they sit in the future.
+        timeBlockDao.listByRecurringRule(id).forEach { block ->
+            val blockDate = block.instanceDate
+                ?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+            val isFuture = blockDate != null && blockDate.isAfter(today)
+            if (isFuture || (blockDate == null && block.startAt > now)) {
+                timeBlockDao.deleteById(block.id)
             }
         }
-        timeBlockDao.listByRecurringRule(id).forEach { block ->
-            if (block.startAt > nowMs) timeBlockDao.deleteById(block.id)
+    }
+
+    /**
+     * V2-ME: edit a recurring rule's title / estimate / priority / kind /
+     * byDayMask / horizon. The caller chooses whether to:
+     *
+     *  - **applyToFutureOpenInstances = true**: re-derive open instances on
+     *    days strictly after "now" so the new title / estimate / weekday mask
+     *    take effect for future unstarted work. The instance row's
+     *    `(ruleId, dayKey)` PK is preserved so the call is idempotent.
+     *    Completed / manually-overridden / one-off-cancelled instances are
+     *    never touched — the user's history stays intact.
+     *  - **applyToFutureOpenInstances = false**: only update the rule row
+     *    itself. Open future instances keep their old title / estimate until
+     *    the user materialises again (or until the planner rebuilds).
+     *
+     * Returns the updated rule.
+     */
+    suspend fun updateRecurringRule(
+        ruleId: String,
+        title: String,
+        estimateMinutes: Int,
+        priority: Int,
+        kind: String,
+        byDayMask: Int,
+        horizonDays: Int,
+        applyToFutureOpenInstances: Boolean
+    ): RecurringRuleEntity? {
+        val existing = recurringRuleDao.getById(ruleId) ?: return null
+        val now = System.currentTimeMillis()
+        val updated = existing.copy(
+            title = title.trim(),
+            estimateMinutes = estimateMinutes.coerceAtLeast(0),
+            priority = priority.coerceIn(1, 5),
+            kind = kind,
+            byDayMask = byDayMask,
+            horizonDays = horizonDays.coerceAtLeast(1),
+            updatedAt = now
+        )
+        recurringRuleDao.upsert(updated)
+        if (applyToFutureOpenInstances) {
+            synchronizeFutureOpenInstances(updated)
+        }
+        return updated
+    }
+
+    /**
+     * V2-ME: regenerate open future tasks for a rule so they match the rule's
+     * current title / estimate / weekday mask. Completed, cancelled,
+     * archived and manually-overridden instances are preserved.
+     *
+     * Implementation:
+     *  1. Walk every open task tied to this rule.
+     *  2. Skip any task whose `instanceDate` has a `RecurringInstanceEntity`
+     *     override (the user explicitly edited or cancelled it).
+     *  3. If the task's `instanceDate` no longer matches the rule's
+     *     frequency, the task is dropped from the future plan.
+     *  4. Otherwise the task's title / estimate is updated.
+     *
+     * Past instances (instanceDate < today) are never touched. The call is
+     * idempotent.
+     */
+    suspend fun synchronizeFutureOpenInstances(rule: RecurringRuleEntity) {
+        val zone = Zone.systemDefault()
+        val today = LocalDate.now(zone)
+        val generator = RecurringGenerator(zone)
+        val horizonEnd = today.plusDays(rule.horizonDays.toLong())
+        val expected = generator
+            .generate(rule, today, horizonEnd.plusDays(1), recurringInstanceDao.listForRule(rule.id))
+            .associateBy { it.dayKey }
+
+        val openTasks = taskDao.listByRecurringRule(rule.id).filter { it.status == "open" }
+        val now = System.currentTimeMillis()
+        for (task in openTasks) {
+            val dayKey = task.instanceDate ?: continue
+            // Past (or today-but-already-started) instance dates are not in
+            // the future open set; leave them alone.
+            val dayDate = runCatching { LocalDate.parse(dayKey) }.getOrNull() ?: continue
+            if (!dayDate.isAfter(today)) continue
+            // If the user has explicitly overridden or cancelled this instance,
+            // honour that override — it is the source of truth.
+            val override = recurringInstanceDao.get(rule.id, dayKey)
+            if (override != null) continue
+            val match = expected[dayKey]
+            if (match == null) {
+                // The rule's frequency no longer emits this day. Drop the
+                // future task and any future block it produced.
+                archiveTask(task.id)
+            } else if (task.title != match.title || task.estimateMinutes != match.estimateMinutes) {
+                taskDao.update(task.copy(title = match.title, estimateMinutes = match.estimateMinutes, updatedAt = now))
+            }
         }
     }
 
@@ -626,6 +789,144 @@ class YinianRepository(
 
     fun observeScheduleDrafts(): Flow<List<ScheduleDraftEntity>> = scheduleDraftDao.observeAll()
 
+    /**
+     * V2-06: Apply an [EditedDraftApplyRequest] (UI snapshot of per-placement
+     * edits / removals) to the database. The caller's flow is:
+     *
+     *  - User opens the draft edit dialog (a Compose-only preview).
+     *  - UI collects changes into `EditablePlacement` rows.
+     *  - On "apply", the UI snapshots those rows into
+     *    [EditedDraftApplyRequest] (an immutable value type, no Compose
+     *    state) and calls this method.
+     *
+     * The semantics are:
+     *
+     *  - Writes happen only after every validation check passes. A failure
+     *    of any check leaves the existing plan unchanged; partial writes
+     *    are never produced.
+     *  - Each row is re-validated for `endMs > startMs`.
+     *  - Each row is re-validated to lie inside the draft's inclusive
+     *    `[windowStartDay, windowEndDay]` window.
+     *  - Overlaps among the proposed edited rows are rejected.
+     *  - Overlaps against currently-saved application-owned blocks in the
+     *    window — fixed OR non-fixed — are rejected. (Previously the check
+     *    skipped non-fixed blocks, which let edited proposals silently
+     *    collide with previously-applied draft blocks and with manually
+     *    added plan blocks.)
+     *  - Duplicate-application protection is preserved by hashing the
+     *    edited result into the fingerprint so an edited proposal cannot be
+     *    mistaken for the unedited fingerprint previously applied.
+     */
+    suspend fun applyEditedScheduleDraft(
+        request: EditedDraftApplyRequest
+    ): ApplyResult {
+        val active = request.rows
+        if (active.isEmpty()) {
+            return ApplyResult.InvalidProposal("所有建议都已被移除，没有可写入的内容。")
+        }
+        val zone = Zone.systemDefault()
+        val windowStartDate = runCatching { LocalDate.parse(request.original.windowStartDay) }
+            .getOrElse { return ApplyResult.InvalidProposal("草案窗口起始日期无法解析。") }
+        val windowEndDate = runCatching { LocalDate.parse(request.original.windowEndDay) }
+            .getOrElse { return ApplyResult.InvalidProposal("草案窗口结束日期无法解析。") }
+        val wsMs = PlannerTime.startOfDayMs(windowStartDate, zone)
+        // Inclusive last day → exclusive upper bound = start of (endDay + 1).
+        val weMs = PlannerTime.endOfDayMs(windowEndDate, zone)
+        for (row in active) {
+            if (row.endMs <= row.startMs) {
+                return ApplyResult.InvalidProposal("「${row.title}」的时间范围不合法。")
+            }
+            if (row.startMs < wsMs || row.endMs > weMs) {
+                return ApplyResult.InvalidProposal(
+                    "「${row.title}」的时间 (${row.startMs} – ${row.endMs}) " +
+                        "超出草案窗口 [${windowStartDate}, ${windowEndDate}]。"
+                )
+            }
+        }
+        // Proposed rows must not overlap each other.
+        val sorted = active.sortedBy { it.startMs }
+        for (i in 1 until sorted.size) {
+            val prev = sorted[i - 1]
+            val cur = sorted[i]
+            if (cur.startMs < prev.endMs) {
+                return ApplyResult.InvalidProposal("「${cur.title}」与上一条建议时间重叠。")
+            }
+        }
+        // Deterministic edited fingerprint must be computed once the proposal
+        // is structurally valid, and the duplicate-application check must run
+        // BEFORE the live saved-block conflict check. Previously the live-
+        // block check ran first; that meant re-applying the same edited
+        // proposal (or re-applying after the first apply left the variant
+        // fingerprint's blocks in place) tripped a Conflict against its own
+        // previously-written blocks instead of taking the NoOp path.
+        // Duplicate guard also keys off `appliedAt != null`, so a first
+        // successful apply followed by an identical second apply is a clean
+        // NoOp — even without a preceding revertScheduleDraft.
+        val variantFingerprint = computeEditedFingerprint(
+            request.original.fingerprint,
+            sorted.map { Triple(it.itemId, it.startMs, it.endMs) }
+        )
+        val prior = scheduleDraftDao.findByFingerprint(variantFingerprint)
+        if (prior != null && prior.appliedAt != null) {
+            return ApplyResult.NoOp("此草案（编辑后）之前已应用，未重复写入。")
+        }
+        // Re-check conflicts against every saved application-owned block
+        // inside the window (fixed and non-fixed). Previously this filtered
+        // to fixed-only, which let edited rows silently collide with
+        // previously applied draft blocks.
+        val liveBlocks = timeBlockDao.listInWindow(wsMs, weMs)
+        for (row in sorted) {
+            val conflict = liveBlocks.firstOrNull { b ->
+                b.startAt < row.endMs && b.endAt > row.startMs
+            }
+            if (conflict != null) {
+                return ApplyResult.Conflict(conflict.title, request.original)
+            }
+        }
+        val draftEntity = ScheduleDraftEntity(
+            id = UUID.randomUUID().toString(),
+            fingerprint = variantFingerprint,
+            createdAt = request.original.createdAt,
+            appliedAt = null,
+            windowStartDay = request.original.windowStartDay,
+            windowEndDay = request.original.windowEndDay,
+            note = "edited via UI"
+        )
+        scheduleDraftDao.upsert(draftEntity)
+        val now = System.currentTimeMillis()
+        val written = mutableListOf<TimeBlockEntity>()
+        val titleLookup = tasksById().associate { it.id to it.title }
+        for (row in sorted) {
+            val entity = TimeBlockEntity(
+                id = UUID.randomUUID().toString(),
+                taskId = row.itemId.takeIf { it.isNotEmpty() },
+                title = titleLookup[row.itemId] ?: row.title,
+                startAt = row.startMs,
+                endAt = row.endMs,
+                fixed = false,
+                source = "plan",
+                draftId = draftEntity.id
+            )
+            timeBlockDao.upsert(entity)
+            written += entity
+        }
+        scheduleDraftDao.markApplied(draftEntity.id, now)
+        return ApplyResult.Applied(draftEntity.id, written.size)
+    }
+
+    private fun computeEditedFingerprint(
+        originalFingerprint: String,
+        editedRows: List<Triple<String, Long, Long>>
+    ): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update("EDITED|".toByteArray())
+        md.update(originalFingerprint.toByteArray())
+        editedRows.sortedBy { it.third }.forEach { (id, startMs, endMs) ->
+            md.update("$id|$startMs|$endMs\n".toByteArray())
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
     private fun computeFingerprint(
         windowStart: LocalDate,
         windowEndExclusive: LocalDate,
@@ -693,14 +994,11 @@ class YinianRepository(
     }
 
     private suspend fun collectBusyIntervals(startMs: Long, endMs: Long): List<BusyInterval> {
-        val blocks = timeBlockDao.listInWindow(startMs, endMs)
+        // V2-ME: system calendar integration is gone. The planner only sees
+        // busy intervals that the user added as fixed blocks inside the app.
+        return timeBlockDao.listInWindow(startMs, endMs)
             .filter { it.fixed }
             .map { BusyInterval(it.startAt, it.endAt, com.yinian.android.planner.BusySource.FixedBlock) }
-        val calEnabled = prefs.calendarEnabled.first()
-        val calBusy = if (calEnabled && calendarBusyReader.hasReadPermission()) {
-            calendarBusyReader.readBusyIntervals(startMs, endMs)
-        } else emptyList()
-        return blocks + calBusy
     }
 }
 
@@ -724,6 +1022,7 @@ sealed class ApplyResult {
         val fixedBlockTitle: String,
         val draft: ScheduleDraft
     ) : ApplyResult()
+    data class InvalidProposal(val reason: String) : ApplyResult()
 }
 
 data class MaterialiseResult(
@@ -746,6 +1045,172 @@ data class CapacitySnapshot(
     val totalScheduled: Int,
     val totalCap: Int
 )
+
+// ============================================================================
+// V2-ME — Focus attribution
+// ============================================================================
+
+/** Per-day focus total returned by [FocusAttribution.totalsByDay]. */
+data class FocusDayTotal(
+    /** ISO local day key (yyyy-MM-dd). */
+    val dayKey: String,
+    /** Sum of active-segment ms that fell on this local day. */
+    val activeMs: Long,
+    /** Count of focus sessions whose active segments touched this day. */
+    val sessionCount: Int
+)
+
+/**
+ * Attribution rules that turn a list of `FocusSessionEntity` rows plus a
+ * (possibly empty) list of `FocusSessionSegmentEntity` rows into per-day
+ * and per-task actual focus minutes.
+ *
+ * **V4 sessions (have segments)**: walk every `kind = "active"` segment
+ * whose `[startedAt, endedAt]` intersects the window, split it across
+ * local-day boundaries using the supplied zone, and add the duration to
+ * each touched day. Paused segments and `endedAt = NULL` segments ending
+ * at "now" are both supported.
+ *
+ * **V3 fallback (session has no segments in the segments table)**:
+ *   1. Skip the session entirely if its status is `cancelled` — cancelled
+ *      sessions are excluded from "实际投入".
+ *   2. Compute total active ms from `pausedMs + max(0, now - activeStartedAt)`
+ *      (only when status is `active`, `paused`, or `completed`). Past
+ *      cancelled sessions were already skipped above.
+ *   3. Anchor a single virtual active segment ending at `endedAt` if set,
+ *      otherwise at "now", and starting at `ended - totalActiveMs` (or
+ *      `startedAt` if the anchor would underflow). The segment is split
+ *      across local days the same way a V4 segment is.
+ *
+ * The V3 fallback is intentionally simple: it loses pause/resume structure
+ * but never double-counts paused time because totalActiveMs already excludes
+ * paused minutes. Past instances (startedAt < now − 30d say) still surface
+ * in the totals, which matches the V1/V2 review behaviour. Tests covering
+ * the fallback live in the test child's `FocusAttributionTest`.
+ */
+object FocusAttribution {
+
+    fun totalsByDay(
+        sessions: List<FocusSessionEntity>,
+        segments: List<FocusSessionSegmentEntity>,
+        startMs: Long,
+        endMs: Long,
+        zone: ZoneId,
+        nowMs: Long = System.currentTimeMillis()
+    ): List<FocusDayTotal> {
+        val segmentsBySession = segments.groupBy { it.sessionId }
+        val perDay = mutableMapOf<String, FocusDayTotal>()
+        for (session in sessions) {
+            val contributions = attributeSession(session, segmentsBySession[session.id].orEmpty(), nowMs)
+            for ((dayKey, ms) in contributions) {
+                if (ms <= 0) continue
+                val existing = perDay[dayKey]
+                perDay[dayKey] = if (existing == null) {
+                    FocusDayTotal(dayKey, ms, 1)
+                } else {
+                    existing.copy(activeMs = existing.activeMs + ms, sessionCount = existing.sessionCount + 1)
+                }
+            }
+        }
+        // Drop days strictly outside the [startMs, endMs) window so the
+        // caller can ask for a specific period without re-filtering.
+        val startKey = PlannerTime.toDayKey(java.time.Instant.ofEpochMilli(startMs).atZone(zone).toLocalDate())
+        val endExclusiveKey = PlannerTime.toDayKey(java.time.Instant.ofEpochMilli(endMs).atZone(zone).toLocalDate())
+        return perDay.entries
+            .filter { (key, _) -> key.compareTo(startKey) >= 0 && key.compareTo(endExclusiveKey) < 0 }
+            .sortedBy { it.key }
+            .map { it.value }
+    }
+
+    fun actualMsByTask(
+        sessions: List<FocusSessionEntity>,
+        segments: List<FocusSessionSegmentEntity>,
+        startMs: Long,
+        endMs: Long,
+        zone: ZoneId,
+        nowMs: Long = System.currentTimeMillis()
+    ): Map<String, Long> {
+        val segmentsBySession = segments.groupBy { it.sessionId }
+        val out = mutableMapOf<String, Long>()
+        for (session in sessions) {
+            val taskId = session.taskId ?: continue
+            val contributions = attributeSession(session, segmentsBySession[session.id].orEmpty(), nowMs)
+            val dayFiltered = filterToWindow(contributions, startMs, endMs, zone)
+            val ms = dayFiltered.values.sum()
+            if (ms <= 0) continue
+            out[taskId] = (out[taskId] ?: 0L) + ms
+        }
+        return out
+    }
+
+    private fun filterToWindow(
+        contributions: Map<String, Long>,
+        startMs: Long,
+        endMs: Long,
+        zone: ZoneId
+    ): Map<String, Long> {
+        val startKey = PlannerTime.toDayKey(java.time.Instant.ofEpochMilli(startMs).atZone(zone).toLocalDate())
+        val endExclusiveKey = PlannerTime.toDayKey(java.time.Instant.ofEpochMilli(endMs).atZone(zone).toLocalDate())
+        return contributions.filter { (key, _) -> key.compareTo(startKey) >= 0 && key.compareTo(endExclusiveKey) < 0 }
+    }
+
+    /**
+     * Returns `dayKey -> ms` for a single session, applying either V4 segment
+     * attribution or the V3 fallback.
+     */
+    internal fun attributeSession(
+        session: FocusSessionEntity,
+        segments: List<FocusSessionSegmentEntity>,
+        nowMs: Long
+    ): Map<String, Long> {
+        if (session.status == "cancelled") return emptyMap()
+        val activeSegments = segments.filter { it.kind == "active" }
+        if (activeSegments.isNotEmpty()) {
+            val out = mutableMapOf<String, Long>()
+            for (seg in activeSegments) {
+                val end = seg.endedAt ?: nowMs
+                if (end <= seg.startedAt) continue
+                splitAcrossDays(seg.startedAt, end, out)
+            }
+            return out
+        }
+        // V3 fallback
+        val totalActive = v3TotalActiveMs(session, nowMs)
+        if (totalActive <= 0L) return emptyMap()
+        val anchorEnd = session.endedAt ?: nowMs
+        val anchorStart = (anchorEnd - totalActive).coerceAtLeast(session.startedAt)
+        val out = mutableMapOf<String, Long>()
+        splitAcrossDays(anchorStart, anchorEnd, out)
+        return out
+    }
+
+    private fun v3TotalActiveMs(session: FocusSessionEntity, nowMs: Long): Long {
+        val accumulated = session.pausedMs
+        val liveSegment = session.activeStartedAt?.let { (nowMs - it).coerceAtLeast(0L) } ?: 0L
+        return accumulated + liveSegment
+    }
+
+    /**
+     * Split the half-open interval `[startMs, endMs)` across local-day
+     * boundaries and add each slice's duration to `accumulator`, keyed by
+     * ISO day key.
+     */
+    private fun splitAcrossDays(startMs: Long, endMs: Long, accumulator: MutableMap<String, Long>) {
+        if (endMs <= startMs) return
+        val zone = ZoneId.systemDefault()
+        var cur = startMs
+        while (cur < endMs) {
+            val instant = java.time.Instant.ofEpochMilli(cur)
+            val date = instant.atZone(zone).toLocalDate()
+            val nextDayStart = date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+            val sliceEnd = minOf(endMs, nextDayStart)
+            val dayKey = date.toString()
+            val sliceMs = sliceEnd - cur
+            if (sliceMs > 0) accumulator[dayKey] = (accumulator[dayKey] ?: 0L) + sliceMs
+            cur = sliceEnd
+        }
+    }
+}
 
 enum class DependencyCheck { Ok, SelfLink, Cycle }
 sealed class AddBlockResult {

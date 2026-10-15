@@ -1,14 +1,16 @@
 package com.yinian.android
 
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
 /**
- * Smoke assertion on the production AndroidManifest: V2 must keep calendar
- * integration read-only, so `WRITE_CALENDAR` must never appear in the merged
- * manifest. `READ_CALENDAR` is required so the user can opt in via Me.
+ * Smoke assertion on the production AndroidManifest.
+ *
+ * V2-ME removed the system-calendar integration. The merged manifest must
+ * declare NEITHER `READ_CALENDAR` NOR `WRITE_CALENDAR`. The schedule and
+ * draft APIs read exclusively from the local `time_blocks` table. `INTERNET`
+ * is still disallowed because V1/V2 is fully offline.
  *
  * The manifest is read from the assembled debug APK first, falling back to the
  * source manifest if no APK has been built yet (CI/build agents running this
@@ -42,20 +44,34 @@ class ManifestPermissionsTest {
     }
 
     @Test
-    fun manifest_declares_READ_CALENDAR_so_users_can_opt_in() {
+    fun merged_manifest_does_not_declare_READ_CALENDAR() {
+        // V2-ME: removed entirely. The app is strictly local — no system
+        // calendar reader dependency at all.
         val xml = manifestText()
-        assertTrue(
-            "READ_CALENDAR must be declared so the Me screen switch is wired.",
+        assertFalse(
+            "READ_CALENDAR must not appear in the merged manifest (removed in V2-ME).",
             xml.contains("android:name=\"android.permission.READ_CALENDAR\"")
         )
     }
 
     @Test
-    fun manifest_does_not_declare_ASR_or_internet_permissions() {
+    fun manifest_does_not_declare_INTERNET_or_STORAGE_or_LOCATION_permissions() {
+        // V1/V2 is fully offline. We do not request INTERNET, EXTERNAL_STORAGE,
+        // ACCESS_FINE_LOCATION, or ACCESS_COARSE_LOCATION under any flow.
         val xml = manifestText()
-        assertFalse(
-            "INTERNET must not be declared — V1/V2 is fully offline.",
-            xml.contains("android:name=\"android.permission.INTERNET\"")
+        val forbidden = listOf(
+            "android.permission.INTERNET",
+            "android.permission.ACCESS_NETWORK_STATE",
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_COARSE_LOCATION",
+            "android.permission.READ_EXTERNAL_STORAGE",
+            "android.permission.WRITE_EXTERNAL_STORAGE"
         )
+        for (perm in forbidden) {
+            assertFalse(
+                "Manifest must not declare forbidden permission $perm",
+                xml.contains("android:name=\"$perm\"")
+            )
+        }
     }
 }

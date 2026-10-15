@@ -125,6 +125,7 @@ fun TaskEditorDialog(
     val canSave = title.isNotBlank()
     val isEditing = existing != null
     val loadingExisting = taskId != null && existing == null
+    val isRecurringInstance = isEditing && existing!!.recurringRuleId != null && existing!!.instanceDate != null
     val prerequisites = remember(existing?.id, relations) {
         existing?.let { repo.blockingFor(it.id, relations) } ?: emptySet()
     }
@@ -148,6 +149,28 @@ fun TaskEditorDialog(
                                 estimateMinutes = estimateMinutes,
                                 dueAt = if (dueEnabled) dueAt else null
                             )
+                            onDismiss()
+                        } else if (isRecurringInstance) {
+                            // V2-ME: editing a recurring instance writes the
+                            // override row, not the parent rule. The parent
+                            // rule and its other instances are not touched.
+                            repo.setInstanceOverride(
+                                ruleId = existing!!.recurringRuleId!!,
+                                dayKey = existing!!.instanceDate!!,
+                                title = title.trim(),
+                                estimateMinutes = estimateMinutes
+                            )
+                            // Mirror the user's title/notes/priority/due back
+                            // onto the generated task row so other screens
+                            // (now, plan) see the latest values.
+                            val updated = existing!!.copy(
+                                title = title.trim(),
+                                notes = notes.trim(),
+                                priority = priority,
+                                estimateMinutes = estimateMinutes,
+                                dueAt = if (dueEnabled) dueAt else null
+                            )
+                            repo.updateTask(updated)
                             onDismiss()
                         } else {
                             val updated = existing!!.copy(
@@ -212,6 +235,9 @@ fun TaskEditorDialog(
             ) {
                 if (isEditing) {
                     TaskStatusLine(existing!!)
+                }
+                if (isRecurringInstance) {
+                    RecurringInstanceNotice(instanceDate = existing!!.instanceDate!!)
                 }
                 OutlinedTextField(
                     value = title,
@@ -304,6 +330,26 @@ fun TaskEditorDialog(
                                 Icon(Icons.Outlined.Archive, contentDescription = null)
                                 Spacer(Modifier.width(4.dp))
                                 Text("归档")
+                            }
+                        }
+                        if (isRecurringInstance) {
+                            // V2-ME: cancel this specific instance. The
+                            // parent rule and other instances are not
+                            // touched; only this dayKey is suppressed.
+                            TextButton(onClick = {
+                                scope.launch {
+                                    repo.setInstanceOverride(
+                                        ruleId = existing!!.recurringRuleId!!,
+                                        dayKey = existing!!.instanceDate!!,
+                                        cancelled = true
+                                    )
+                                    repo.archiveTask(existing!!.id)
+                                    onDismiss()
+                                }
+                            }) {
+                                Icon(Icons.Outlined.Close, contentDescription = null)
+                                Spacer(Modifier.width(4.dp))
+                                Text("取消本次")
                             }
                         }
                         TextButton(onClick = { confirmDelete = true }) {
@@ -448,6 +494,35 @@ private fun DividerLine() {
             .height(1.dp)
             .background(MaterialTheme.colorScheme.outlineVariant)
     )
+}
+
+/**
+ * V2-ME: notice shown when the user is editing a single instance produced by
+ * a recurring rule. Surfaces the dayKey and reminds the user that saving
+ * here only changes this one instance.
+ */
+@Composable
+private fun RecurringInstanceNotice(instanceDate: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.tertiaryContainer, RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .semantics { contentDescription = "这条任务来自重复规则 $instanceDate，保存仅影响本次" },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        PillBadge(
+            "本次实例 $instanceDate",
+            background = MaterialTheme.colorScheme.tertiary,
+            contentColor = MaterialTheme.colorScheme.onTertiary
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "保存仅修改本次；规则和其他实例不受影响。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onTertiaryContainer
+        )
+    }
 }
 
 /**

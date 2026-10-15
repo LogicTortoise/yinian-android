@@ -41,6 +41,11 @@ class FocusAndPlanSmokeTest {
         // The "计划" text appears both as the bottom-nav label and as the
         // screen header; assert at least one is visible.
         composeRule.onAllNodesWithText("计划").onFirst().assertIsDisplayed()
+        // Switch to the day view so the "添加时间块" entry is in the
+        // composition (PlanViewHeader renders view tabs and the day-view
+        // body carries the entry point).
+        composeRule.onAllNodesWithText("日").onFirst().performClick()
+        composeRule.waitForIdle()
         composeRule.onNodeWithText("添加时间块").assertIsDisplayed()
     }
 }

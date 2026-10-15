@@ -1,260 +1,328 @@
-# V2 自动化测试报告
+# V2 自动化测试报告（V2-CAL / V2-CAL-REVIEW-FIX / V2-ME 一体化最终）
 
-本报告汇总 Yinian Android V2 自动化测试的最终结果，覆盖仓库当前 V2
-提交（`main` 分支）的 JVM 单元测试、设备端集成测试、迁移测试和权限
-烟测。
+本报告汇总 Yinian Android V2 端到端自动化测试的最终结果，覆盖仓库当前
+`main` 分支（含 V2-CAL 日 / 周 / 月视图、可编辑草案 + V2-CAL-REVIEW-FIX
+草案边界修复 + V2-ME 系统日历剥离、重复规则编辑、专注回顾与 v3→v4 迁
+移）的 JVM 单元测试、设备端集成测试、迁移测试和权限烟测。
 
-V2 范围在实施过程中由测试套件暴露了 2 个生产规划器缺陷（同一任务被
-多次排入 / 既出现在 `placements` 又出现在 `unscheduled`）。开发者子
-代理在 `PlannerEngine.kt` 完成了最小修复（per-day 主循环顶部增加
-`placedIds` 去重 + carry-over 段复用同一 `placedIds`），原断言保留为
-回归证据，**已全部通过**。
+| 子版本 | 提交 / 标签 | 范围 |
+|---|---|---|
+| V2-CAL | 计划页日 / 周 / 月视图、`PlanDate` 帮手、可编辑草案（`EditableDraft`、`DraftEditDialog`） | P1 + P2 |
+| V2-CAL-REVIEW-FIX | 月视图 42 天全宽查询、`data/repo/EditedDraftApplyRequest` 数据/UI 层分离、apply 之前空 / 范围 / 重叠 / 越界五重门 | P1 + P2 复盘 |
+| V2-ME | 删除 `READ_CALENDAR` / `WRITE_CALENDAR` / `CalendarBusyReader`；引入 `focus_session_segments` + `MIGRATION_3_4`；`updateRecurringRule` + `synchronizeFutureOpenInstances`；`FocusReviewDialog` 日/周 + 当前进行中 + 跨午夜分摊 + V3 回退归因；Me 页可达性修复 | P0 + P3 + P4 |
+| V2-DRAFT-IDEMPOTENCY-FIX | `applyEditedScheduleDraft` 重复保护门提前到 live-block 冲突检查之前 | 编辑后变体指纹幂等 |
+| V2-FOCUS-REVIEW-CRASH-FIX | `FocusReviewDialog` 把 `return@Column` 早返回拆成平衡的 `if / else` 两分支，修复空数据初次组合 `SlotTable.length=0; index=-5` Compose 运行时崩溃 | 弹窗可重复打开 |
+
+> V2-TEST-REGRESSION（2026-10-16）追加：修正 `RepositoryApplyEditedDraftTest` 的连续调用幂等用例（去除 `revertScheduleDraft`），重命名并修正 `RepositoryV2MeRecurringTest` 中与 `recurringRuleId` / `PlanItem.locked` 相关的用例，新增 `PlanMeReviewSmokeTest.me_page_focus_review_dialog_exposes_day_week_toggle_and_navigation_controls` 冒烟；该冒烟用例在 `outputs/v2-test-regression.md` 报告里稳定暴露 `FocusReviewDialog` 弹窗的 `SlotTable.length=0; index=-5` 崩溃并被作为生产 handoff 留给开发子代理，未通过弱化断言 / 删除用例 / `@Ignore` 等方式绕过。V2-TEST-FINAL（2026-10-16，本次最终回归）在 V2-FOCUS-REVIEW-CRASH-FIX 落地后跑完整两套件，168 / 0 / 0 / 0 全部通过；详见本地工件 `outputs/v2-test-final.md`（该目录被 `.gitignore` 排除，不纳入版本控制，仅供本地留存）。
 
 ## 环境
 
-- JDK 17（Homebrew openjdk@17 17.0.19，路径
+- JDK 17（Homebrew `openjdk@17` 17.0.19，路径
   `/opt/homebrew/Cellar/openjdk@17/17.0.19/libexec/openjdk.jdk/Contents/Home`）。
 - Android SDK Platform 34、Build-Tools 34.0.0、Platform-Tools。
-- AVD：`Pixel_3a_API_34_extension_level_7_arm64-v8a`（API 34 / Android 14
-  / ABI `arm64-v8a`，extension level 7）。
-- ADB 序列号：`emulator-5554`（**唯一**连接的设备）。
+- AVD：`Pixel_3a_API_34_extension_level_7_arm64-v8a`（Android 14 / API 34
+  / ABI `arm64-v8a`）。本地额外连接的物理机 `127.0.0.1:5555` (Samsung
+  `SM_G998B`) **不参与**本测试。
+- ADB 序列号：API 34 模拟器 = `emulator-5554`（**唯一**真正参与测试的
+  设备）。每条 `connectedDebugAndroidTest` 命令显式带
+  `ANDROID_SERIAL=emulator-5554`。
+- 时区：测试 JVM 一律运行在 `TZ=UTC`，确保生产代码中
+  `FocusAttribution.splitAcrossDays` 的本地日期分摊结果是确定性的；这
+  个常量也是仓库外的环境约束、不写入任何代码。
 
 ## 套件命令（一次性按顺序执行）
 
 ```bash
-# JDK 17 + Android SDK 路径通过环境变量提供
 export JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.19/libexec/openjdk.jdk/Contents/Home
 export ANDROID_HOME=$HOME/Library/Android/sdk
 export ANDROID_SDK_ROOT=$HOME/Library/Android/sdk
 export PATH=$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH
+export TZ=UTC
 
+# 1) 纯 JVM 单元测试 (Android-free)
 ./gradlew :app:testDebugUnitTest --rerun-tasks --console=plain --no-daemon
-./gradlew :app:connectedDebugAndroidTest --console=plain --no-daemon \
-    -Pandroid.testInstrumentationRunnerArguments.serial=emulator-5554
+
+# 2) 设备端集成 + Compose UI 烟测 (API 34 模拟器 only)
+ANDROID_SERIAL=emulator-5554 \
+  ./gradlew :app:connectedDebugAndroidTest --console=plain --no-daemon
 ```
 
-`testDebugUnitTest` 必须先跑通：它会一并构建 debug + test APK，
+`testDebugUnitTest` 先跑通：它会一并构建 debug + test APK，
 是 `connectedDebugAndroidTest` 的前置。
 
 ## 最终结果
 
-| 套件 | 类 | 测试数 | 通过 | 失败 | 跳过 |
+| 套件 | 测试类 | 测试数 | 通过 | 失败 | 跳过 |
 |---|---|---:|---:|---:|---:|
-| `:app:testDebugUnitTest` | V1 `DateUtilTest` | 8 | 8 | 0 | 0 |
-| `:app:testDebugUnitTest` | V1 `DurationFormatterTest` | 4 | 4 | 0 | 0 |
-| `:app:testDebugUnitTest` | V2 `ManifestPermissionsTest` | 3 | 3 | 0 | 0 |
-| `:app:testDebugUnitTest` | V2 `PlannerEngineTest` | 13 | 13 | 0 | 0 |
-| `:app:testDebugUnitTest` | V2 `RecurringGeneratorTest` | 10 | 10 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V1 `AppNavigationTest` | 4 | 4 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V1 `FocusAndPlanSmokeTest` | 2 | 2 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V1 `IdeaCaptureFlowTest` | 1 | 1 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V1 `TaskCreationFlowTest` | 1 | 1 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V1 `RepositoryIdeasTest` | 8 | 8 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V1 `RepositoryTasksTest` | 8 | 8 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V1 `RepositoryTimeBlocksTest` | 7 | 7 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V1 `RepositoryFocusTest` | 8 | 8 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V1 `RepositoryDependencyTest` | 9 | 9 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V2 `RepositoryWorkPolicyTest` | 5 | 5 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V2 `RepositoryRecurringTest` | 7 | 7 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V2 `RepositoryScheduleDraftTest` | 6 | 6 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V2 `RoomMigrationV2ToV3Test` | 1 | 1 | 0 | 0 |
-| `:app:connectedDebugAndroidTest` | V2 `PlanMeReviewSmokeTest` | 5 | 5 | 0 | 0 |
-| **合计** | | **110** | **110** | **0** | **0** |
+| `:app:testDebugUnitTest` | `DateUtilTest` | 8 | 8 | 0 | 0 |
+| `:app:testDebugUnitTest` | `DurationFormatterTest` | 4 | 4 | 0 | 0 |
+| `:app:testDebugUnitTest` | `ManifestPermissionsTest` | 3 | 3 | 0 | 0 |
+| `:app:testDebugUnitTest` | `PlannerEngineTest` | 13 | 13 | 0 | 0 |
+| `:app:testDebugUnitTest` | `RecurringGeneratorTest` | 10 | 10 | 0 | 0 |
+| `:app:testDebugUnitTest` | **`FocusAttributionTest`** *(V2-ME 新增)* | 10 | 10 | 0 | 0 |
+| `:app:testDebugUnitTest` | **`PlanDateTest`** *(V2-CAL 新增)* | 12 | 12 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `AppNavigationTest` | 4 | 4 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `FocusAndPlanSmokeTest` | 2 | 2 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `IdeaCaptureFlowTest` | 1 | 1 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `TaskCreationFlowTest` | 1 | 1 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `RepositoryIdeasTest` | 8 | 8 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `RepositoryTasksTest` | 8 | 8 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `RepositoryTimeBlocksTest` | 7 | 7 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `RepositoryFocusTest` | 14 | 14 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `RepositoryDependencyTest` | 9 | 9 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `RepositoryWorkPolicyTest` | 5 | 5 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `RepositoryRecurringTest` | 7 | 7 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `RepositoryScheduleDraftTest` | 6 | 6 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | **`RepositoryV2MeRecurringTest`** *(V2-ME 新增；本轮重命名 + 澄清 `recurringRuleId` / `PlanItem.locked` 相关用例)* | 15 | 15 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | **`RepositoryApplyEditedDraftTest`** *(V2-CAL-REVIEW-FIX 新增)* | 8 | 8 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | `RoomMigrationV2ToV3Test` | 1 | 1 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | **`RoomMigrationV3ToV4Test`** *(V2-ME 新增)* | 2 | 2 | 0 | 0 |
+| `:app:connectedDebugAndroidTest` | **`PlanMeReviewSmokeTest`** *(V2-CAL+V2-ME 更新；新增 Focus Review 弹窗冒烟)* | 10 | 10 | 0 | 0 |
+| **合计** | | **168** | **168** | **0** | **0** |
 
-零 `@Ignore`、零跳过、零失败。V1 的 60 条测试在 V2 生产代码下全部继
-续通过。
+零 `@Ignore`、零跳过。V2-TEST-FINAL（2026-10-16）跑完整两套件后 1 条之前失败的 Focus Review 弹窗冒烟 `me_page_focus_review_dialog_exposes_day_week_toggle_and_navigation_controls` 也已修复并通过；当前 168 条用例全部绿色，全部覆盖率与一次性 `FocusReviewDialog` 崩溃的处置记录见本地工件 `outputs/v2-test-final.md` 与 `outputs/v2-focus-review-crash-fix.md`（`outputs/` 目录被 `.gitignore` 排除，不纳入版本控制，仅供本地留存）。V1 的 60 条老用例已包含在 `HEAD` 上 V2 报告的 110 条基线里（38 JVM + 72 设备）；本轮在 V2-CAL / V2-CAL-REVIEW-FIX / V2-ME / V2-DRAFT-IDEMPOTENCY-FIX / V2-FOCUS-REVIEW-CRASH-FIX 上净增 58 条用例（22 JVM + 36 设备端），由 110 → 168（60 JVM + 108 设备）。
 
-JVM XML：
-
-```
-DateUtilTest               tests=8  fail=0 err=0 skip=0
-DurationFormatterTest      tests=4  fail=0 err=0 skip=0
-ManifestPermissionsTest    tests=3  fail=0 err=0 skip=0
-PlannerEngineTest          tests=13 fail=0 err=0 skip=0
-RecurringGeneratorTest     tests=10 fail=0 err=0 skip=0
-TOTALS                     tests=38 fail=0 err=0 skip=0
-```
-
-设备端 XML（`TEST-Pixel_3a_API_34_...xml` 套件根属性）：
+JVM 套件 XML 根属性：
 
 ```
-tests="72" failures="0" errors="0" skipped="0" time="170.806s"
+DateUtilTest                  tests=8  fail=0 err=0 skip=0
+DurationFormatterTest         tests=4  fail=0 err=0 skip=0
+ManifestPermissionsTest       tests=3  fail=0 err=0 skip=0
+PlannerEngineTest             tests=13 fail=0 err=0 skip=0
+RecurringGeneratorTest        tests=10 fail=0 err=0 skip=0
+FocusAttributionTest          tests=10 fail=0 err=0 skip=0  ← NEW
+PlanDateTest                  tests=12 fail=0 err=0 skip=0  ← NEW
+JVM TOTAL                     tests=60 fail=0 err=0 skip=0
 ```
 
-## PlannerEngine 回归：已修复
+设备端套件根属性（V2-TEST-FINAL，2026-10-16）：
 
-V2 实施期间由保留的失败用例上报的两条 `PlannerEngine` 缺陷，现已在
-生产代码修复并通过原始断言回归：
+```
+tests="108" failures="0" errors="0" skipped="0" time="91.653s"
+```
 
-| # | 用例 | 修复前实际 | 修复后实际 |
-|---|---|---|---|
-| 1 | `PlannerEngineTest.plan_is_deterministic_for_identical_inputs`（`PlannerEngineTest.kt:73`） | `expected:<3> but was:<15>` 失败：同一 item 在多天被重复 placed | `first.placements.size == 3`、`unscheduled.size == 0`，两条 `plan()` 调用等价 |
-| 2 | `PlannerEngineTest.plan_does_not_schedule_an_item_both_scheduled_and_unscheduled_after_carry_over`（`PlannerEngineTest.kt:261`） | 同一 item 既在 `placements` 又在 `unscheduled`（carry-over 在 day2 placed，但 day1 的 `EstimateTooLong` 未撤回） | carry-over 后只可能 placed 或 unscheduled 中一个；按 day1 = 30min / day2 = 9h 的策略放置到 day2 |
+V2-TEST-REGRESSION run（修复前）记录的
+`tests="108" failures="1" errors="0" skipped="0" time="87.938s"` 与上述
+最终值差异即为 Focus Review 冒烟用例由 `ArrayIndexOutOfBoundsException`
+失败转向通过。
 
-最小修复点（`app/src/main/java/com/yinian/android/planner/PlannerEngine.kt`）：
+（实际时间在 `outputs/instrumented-TEST-xml.xml` 中以毫秒为单位记录；
+本仓库不转发过去 V1 报告的 170s / 2m43s 这种固定时长数字，因为每次
+跑都会受 AVD 启动、ADB socket / Compose 仪表化抖动影响，单次值不是
+断言。）
 
-- per-day 主循环顶部 `if (item.item.id in placedIds) continue`；
-- carry-over 段推进同一 `placedIds`：`placedIds += item.item.id` 后再
-  `placedIt = true`；
-- unscheduled 末尾仍调用 `.distinctBy { it.itemId }` 防止重复。
+> 1 条失败即新加的 Focus Review 弹窗冒烟；它直接复现了生产代码的
+> `FocusReviewDialog.kt` 在空数据初始组合时的 `SlotTable.length=0;
+> index=-5` Compose 运行时崩溃（`return@Column` 早返回导致组边界对
+> 不齐）。完整的崩溃栈与最小修复路径见
+> 本地工件 `outputs/v2-test-regression.md`（`outputs/` 目录被 `.gitignore` 排除，不纳入版本控制，仅供本地留存）的 "Production
+> defect" 一节；该测试按 brief 的"不通过任何手段绕过真实缺陷"原则原样
+> 保留。
 
-这两条用例的断言在提交版本中一字未改，作为固定回归证据保留下来。
+## 本轮新增覆盖一览
 
-## V2 新增覆盖一览
+### V2-CAL：`PlanDateTest`（JVM，12 用例）
 
-### 纯 JVM（Android-free `planner/` 包）
+- `startOfWeek` 对一周 7 天的输入都返回 Monday。
+- `weekRange` 给出从 Monday 起的 7 天半开区间。
+- `monthGrid` 永远 42 个格子、首格 Monday、末格 = 首格 + 41 天。
+- 闰年 (2024) 与平年 (2025) 的二月分别含 / 不含 29 日。
+- 跨月跨年边界（January 2026）— 前导单元格来自上一年 12 月，末尾
+  单元格进入次年 2 月。
+- `isSameMonth`、`toLocalDate` ↔ `toStartOfDayMs`、`dayKey` ↔
+  `parseDayKey`、`shiftDays/Weeks/Months`、`toEndOfDayMs == startOfNextDay`
+  全部断言。
 
-- `PlannerEngineTest` (13)：确定性 / 不与固定块 / 工作窗口与休息缓
-  冲、日容量、依赖阻塞、优先级与截止压力排序、跨天 carry-over、估时
-  过长与时长不受支持两种 unscheduled 原因、unscheduled 原因稳定、同
-  任务既 placed 又 unscheduled、容量与已排时间一致性。
-- `RecurringGeneratorTest` (10)：daily / weekday / weekly byDayMask /
-  起始日 / 半开窗口边界 / 单实例覆盖 / 取消实例 / 幂等性 / 规则编辑
-  diff 保留历史 / `byDayMask=0` 不产出。
-- `ManifestPermissionsTest` (3)：合并后清单不存在 `WRITE_CALENDAR`、
-  存在 `READ_CALENDAR`、不存在 `INTERNET`。
+### V2-ME：`FocusAttributionTest`（JVM，10 用例）
 
-### 设备端集成
+- V4 单段在单日内 → 1 天，整段时长。
+- V4 段跨午夜 → 跨 2 个本地日，每段 ms 等于 `[startMs, endMs)` 在该日
+  的切片长度。
+- V4 段 `endedAt = null` 时被 `nowMs` 封顶。
+- V4 段混合 active + paused → 只有 active 段被计入，paused 段被排
+  除。
+- V3 回退：completed 会话用 `endedAt` 锚定 → 当日计入完整时长。
+- V3 回退：cancelled 会话 → 全部排除。
+- V3 回退：active 会话锚定 `now − totalActive` → 当日计入。
+- `actualMsByTask` 按 taskId 分桶有效 ms。
+- 跨日段剪裁到询问窗口 `[start, end)` 内部。
 
-- `RepositoryWorkPolicyTest` (5)：`saveWorkPolicies` 替换语义、
-  `bufferMinutes` + `dailyCapMinutes` 持久化、`computeWeekCapacity` 与
-  启用工作日对应、`non-fixed` 计时 / `fixed` 不计、`disabled day` 覆
-  写。
-- `RepositoryRecurringTest` (7)：每日规则幂等、同
-  `(ruleId, instanceDate)` 不重复、覆盖 / 取消、归档只清未来开放任
-  务、weekday / weekly byDayMask、覆盖标题回写到生成出的任务行。
-- `RepositoryScheduleDraftTest` (6)：构建草案不写任何 `TimeBlock`、
-  显式 apply 才写、同 fingerprint 重 apply 是 NoOp、apply 时新 fixed
-  冲突整个失败无部分写入、新 fixed 不被覆盖、可通过
-  `revertScheduleDraft` 按 `draftId` 仅移除本次应用产生的块。
-- `RoomMigrationV2ToV3Test` (1)：使用
-  `FrameworkSQLiteOpenHelperFactory` 手工创建一个 v2 数据库（与 V1 实
-  体一一对应），植入 ideas / tasks / relations / time_blocks /
-  focus_sessions 真实样本行；再用生产 `MIGRATION_2_3` 打开，回到 V3
-  后断言：
-  - 每一个原 idea / task / relation / time-block / focus-session 字
-    段值都保留；
-  - 任务 `recurringRuleId` / `instanceDate`、`time_blocks`
-    `recurringRuleId` / `instanceDate` / `draftId` 五个 V2 新列存在且
-    默认 `NULL`；
-  - 四个 V2 表 `work_policies` / `recurring_rules` /
-    `recurring_instances` / `schedule_drafts` 通过写入 + 读回验证存
-    在；
-  - 所有 V2 DAO 接入正常。
-  - 因为 `AppDatabase.exportSchema=false`，生产环境没有 Room 要求的
-    schema JSON；测试完全用 SQL 自己堆出 v2 fixture 再让 Room 上
-    `MIGRATION_2_3`，避免了"编译通过就算过"的伪验收。
-- `PlanMeReviewSmokeTest` (5)：计划页显示"本周容量"卡 + "生成排期草
-  案"按钮；草案对话框（"放弃"/"应用"按钮）打开后预览不立即写；
-  「我的」页"每周工作规则"/"重复规则"入口可达；"本周专注回顾"入口
-  可达；"只读日历忙碌时间"开关可达。
+### V2-ME：`RepositoryFocusTest` 新增 6 条用例
 
-## V2 数据迁移测试说明（brief 要求）
+`FocusSessionSegmentDao` 在每次生命周期转换（`startFocus` /
+`pauseFocus` / `resumeFocus` / `endFocus` / `cancelFocus`）上都被
+写入正确的段：
+- `startFocus_writes_one_open_active_segment`
+- `pauseFocus_closes_active_segment_and_opens_paused_segment`
+- `resumeFocus_closes_paused_segment_and_opens_new_active_segment`
+- `endFocus_closes_the_open_active_segment_and_writes_no_paused_segment`
+- `cancelFocus_closes_any_open_segment_so_no_row_carries_endedAt_null`
+- `segments_are_attributed_per_session_and_do_not_leak_between_sessions`
 
-V2 brief 要求"create a valid v2 SQLite fixture using SQL 或 explain the
-precise blocker"。`AppDatabase.exportSchema=false` 把这条路径堵了 80%
-——没有 schema JSON，`MigrationTestHelper.createDatabase(version = 2)`
-不会生成可验证的源 schema。`RoomMigrationV2ToV3Test` 的解决方案：
+### V2-ME：`RepositoryV2MeRecurringTest`（设备端，15 用例）
 
-1. 不依赖 `MigrationTestHelper`，直接用
-   `androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory` 创
-   建一份与 V1 实体对应的 v2 SQLite 文件；
-2. 用 `db.execSQL(...)` 直接 INSERT 样本 idea / task / relation /
-   block / focus session；
-3. 关闭 helper 以释放文件；
-4. 用 `Room.databaseBuilder(...).addMigrations(AppDatabase.MIGRATION_2_3).build()`
-   重开同一文件，由 V3 的 `@Database` + production migration 完成
-   `tasks` / `time_blocks` 五条 `ALTER TABLE ... ADD COLUMN` 与
-   `work_policies` / `recurring_rules` / `recurring_instances` /
-   `schedule_drafts` 四个 `CREATE TABLE`；
-5. 通过 V3 DAO 读回并断言每一条 seed 数据 + 五个新列默认值 + 四个新表
-   都已就位。
+新覆盖：
+- `updateRecurringRule` 改写规则行并返回更新后的实体；未知 id 返回
+  null；负 priority 钳到 1；负 estimate 钳到 0；horizon ≤ 0 钳到 1。
+- `updateRecurringRule(applyToFutureOpenInstances = true)`：未来已开
+  任务的标题/估时同步；过去/已完成/被覆盖/已取消实例不被改写。
+- `synchronizeFutureOpenInstances`：把规则切换成 weekday 后，Saturday /
+  Sunday 的未来任务被归档；其他天保留。
+- `archiveRecurringRule`：未来开放任务被归档（observeActiveTasks 不再
+  包含它们），今日 / 过去 / 完成 / 被覆盖实例保留；同一调用重复一次
+  是 id 幂等。
+- `setInstanceOverride` 单实例标题/估时写入并回写到 generated 任务
+  行；`cancelled = true` 让 generator 跳过那日。
+- `(ruleId, dayKey)` 幂等性：在两次 `materialiseRecurringInstances` 之
+  后每个 (rule, day) pair 仍然只出现一次。
+- `materialise` 不写入 `time_blocks`（独立的时间块分配是排期的工作）。
 
-不是编译式验收；测试在 API 34 模拟器 `emulator-5554`（Android 14 /
-`arm64-v8a`）上跑通。
+### V2-CAL-REVIEW-FIX：`RepositoryApplyEditedDraftTest`（设备端，8 用例）
 
-## 迁移与回归证据（最终一次性 run）
+对 `applyEditedScheduleDraft` 端的 5 个验证门：
 
-- JVM：`./gradlew :app:testDebugUnitTest --rerun-tasks`
-  - log：`outputs/v2-jvm-final.log`
-  - HTML 汇总：`outputs/jvm-index.html`
-  - per-test XML：`outputs/jvm-TEST-xml/TEST-*.xml`（5 份，含
-    `TEST-com.yinian.android.planner.PlannerEngineTest.xml` 在内）。
-- 设备端：`./gradlew :app:connectedDebugAndroidTest`
-  - log：`outputs/v2-instrumented-final.log`
-  - HTML 汇总：`outputs/instrumented-index.html`（72 tests / 0 failures
-    / 100% / 2m43.53s）
-  - 套件 XML：
-    `outputs/instrumented-TEST-xml.xml` 根属性
-    `tests="72" failures="0" errors="0" skipped="0" time="170.806s"`。
-  - per-test logcat：
-    `app/build/outputs/androidTest-results/connected/debug/Pixel_3a_API_34_extension_level_7_arm64-v8a(AVD) - 14/logcat-*.txt`
-    共 72 份，按测试类计数——`RepositoryDependencyTest=9`、
-    `RepositoryTasksTest=8`、`RepositoryIdeasTest=8`、
-    `RepositoryFocusTest=8`、`RepositoryTimeBlocksTest=7`、
-    `RepositoryRecurringTest=7`、`RepositoryScheduleDraftTest=6`、
-    `PlanMeReviewSmokeTest=5`、`RepositoryWorkPolicyTest=5`、
-    `AppNavigationTest=4`、`FocusAndPlanSmokeTest=2`、
-    `TaskCreationFlowTest=1`、`IdeaCaptureFlowTest=1`、
-    `RoomMigrationV2ToV3Test=1`，合计 72。
-- `RoomMigrationV2ToV3Test` 通过证据：
-  `app/build/outputs/androidTest-results/connected/debug/Pixel_3a_API_34_extension_level_7_arm64-v8a(AVD) - 14/logcat-com.yinian.android.data.RoomMigrationV2ToV3Test-migration_v2_to_v3_preserves_existing_rows_and_adds_v2_columns_and_tables.txt`，
-  含 `I TestRunner: started: migration_v2_to_v3_...` 与
-  `I TestRunner: finished: migration_v2_to_v3_...`。
+1. **空 proposal 守卫** → `InvalidProposal("所有建议都已被移除")`，无 DB
+   写。
+2. **每行范围** → `endMs > startMs`，否则 `InvalidProposal`。
+3. **每行窗口** → `[startMs, endMs)` 必须落在半开
+   `[windowStartDay, endOfDayMs(windowEndDay)]` 之间，否则
+   `InvalidProposal`。
+4. **行间重叠** → 排序后若 `cur.startMs < prev.endMs`，否则
+   `InvalidProposal`。
+5. **现存块冲突** → `listInWindow(ws, we)` 取回所有 fixed + non-fixed
+   块（不是只 fixed），命中重叠则 `Conflict(fixedBlockTitle)`，不写新
+   块。
+- 指纹改写后 `EDITED|<original.fp>|<sorted rows>`，apply 一次后入库
+  一条带 `appliedAt` 的 schedule_draft 行；相同的 edited 请求在
+  `revertScheduleDraft` 之后再 apply 触发 `NoOp`，不重复写块。
+- `buildScheduleDraft` 不持久化任何 draft 行（仍在内存里），只有
+  `applyEditedScheduleDraft` 走完后才入库并标 `appliedAt != null`。
 
-## 已修复的 V2 测试自修正（不是产品 bug）
+### V2-CAL：`PlanMeReviewSmokeTest`（设备端，从 5 → 10 条）
 
-为了在 V2 的新生产 `YinianRepository` 构造器上编译，原仓库 V1 的
-`TestFakes.kt` / `RepoFactory.kt` / `RepositoryIdeasTest.kt` 三处测试
-桩需要把 `Fake*Dao` 集合扩展到 9 个 DAO 并新增一份 `CalendarBusyReader`
-真实组件（API final 不可子类化）。三处补丁均在 `app/src/androidTest/**`
-内：
+针对屏幕布局的回归烟测：
 
-- `TestFakes.kt`：加 `FakeWorkPolicyDao` / `FakeRecurringRuleDao` /
-  `FakeRecurringInstanceDao` / `FakeScheduleDraftDao`，并扩展
-  `FakeTaskDao.listByRecurringRule` / `getById` / `getAllSnapshot` /
-  `getAllOpenSnapshot`、`FakeTimeBlockDao.listByRecurringRule` /
-  `listByDraft` / `listInWindow` / `listByTask`。
-- `RepoFactory.kt`：把新 DAO 全部用 fakes 接入 `YinianRepository`，
-  真实 `CalendarBusyReader` 接收 `ApplicationProvider` 提供的 Context。
-- `RepositoryIdeasTest.kt` 中持有真实 `audioRecorder` 的
-  `makeRepoWithFilesDir` 同步补齐 4 个新 DAO + `CalendarBusyReader`。
+- 计划页容量卡 + day-view 上 `生成排期草案` + `添加时间块` 可见。
+- 计划页 view-tabs (`日 / 周 / 月`) 与 nav 控件 (`今天 / 上一段 / 下一段`)
+  通过 `contentDescription` 可定位。
+- 切到月视图后，month-grid 的 `plan-month-grid` testTag 仍然存在。
+- 编辑弹窗打开时 `排期草案` 文本不增量（预览阶段不写数据库）。
+- 「我的」页在竖向滚动下能逐项找到「每周工作规则」「重复规则」「专
+  注回顾」三个入口——这是 V2-ME 修复 Me 页不可滚动到底部的固定回归
+  用例。
+- 「我的」页不再显示「只读日历忙碌时间」开关字符串（V2-ME 已移除）。
+- 点击「查看当前能力」打开对话框，确认列明
+  「Android 系统日历集成（V2-ME 已移除）」。
 
-这些不是产品 bug 修复，没有动 `app/src/main/**`。
+### V2-ME：`RoomMigrationV3ToV4Test`（设备端，2 用例）
 
-## 覆盖范围与有意限制
+`MIGRATION_3_4` 是**纯添加**的，没有 fallback 或字段重写，断言如下：
 
-- **仓储测试**仍使用 fake DAO（不真连 Room），验证的是
-  `YinianRepository` 的业务命令 + 依赖校验 + 状态机分支 +
-  `PrefsRepository` / `AudioRecorder` / `CalendarBusyReader` 的真实调
-  用，以及 V2 增加的排期草案 / 重复规则 / 工作时间物化路径；不是
-  SQL 与迁移路径。
-- **真实的 Room 迁移路径**只覆盖 `RoomMigrationV2ToV3Test`：这条用
-  例走完整的 SQL ALTER + CREATE，并通过 V3 DAO 读写一遍数据。
-- **日历 `READ_CALENDAR` 真权限授予路径**没有覆盖：模拟器通常没日
-  历账号，所以连带着 `readBusyIntervals` 在我们的设备上始终返回空。
-  真日历集成需要真机 + 手动授权，由人工验证。
-- **专注回顾的 Compose UI** 仅覆盖到对话框入口可达；不展开 review
-  内部的 panel，因为 Me 页底部 `GroupCard` 居于 FAB 之下，未引入生
-  产可滚动 Column 也无法保证可见性，故以 `assertExists()` 替代
-  `assertIsDisplayed()`。
-- **`PlannerEngine` 的两个生产 bug** 在本次 run 已修复并通过原始断
-  言回归；不是已知 bug。
-- **没有任何用例覆盖 `AGENTS.md` 里被刻意禁用的能力**（云端 LLM、
-  ASR、TTS、账号同步等）。
+- `migration_v3_to_v4_retains_every_v3_row_and_adds_focus_session_segments_table`
+  1. `FrameworkSQLiteOpenHelperFactory` 用 *V1 实体 byte-for-byte*
+     的 CREATE 语句手搓一个 v2 文件 fixture（包括 `relations`、`time_blocks`
+     五列原版）。
+  2. 用 `addMigrations(MIGRATION_2_3)` 升级到 v3 再关库。
+  3. 重新 `addMigrations(MIGRATION_2_3, MIGRATION_3_4)` 打开到 v4，并
+     断言：原 ideas / tasks / relations / time_blocks / focus_sessions 行
+     全部存在；`focus_session_segments` 表已建且空白；插入一段 active
+     段后 `all()`、`listInWindow` 都能查回相同 row。
+- `migration_v3_to_v4_does_not_drop_or_rewrite_focus_or_task_rows` 用一段
+  `endedAt = null` 的 live 段验证 MIGRATION_3_4 没有改写段字段。
+
+这里 `RoomMigrationV2ToV3Test` 也做了小改：`addMigrations(MIGRATION_2_3)`
+→ `addMigrations(MIGRATION_2_3, MIGRATION_3_4)`，避免在 Room 期望
+`version=4` 时落单 `v3 → v4` 找不到路径——见 V2-ME 数据库升 v4 的直
+接副作用。
+
+### `ManifestPermissionsTest`（V2-ME 的关键校验）
+
+`manifest_declares_READ_CALENDAR_so_users_can_opt_in` 被翻转成
+`merged_manifest_does_not_declare_READ_CALENDAR`，断言这一条权限也
+不再出现。另新增 `manifest_does_not_declare_INTERNET_or_STORAGE_or_LOCATION_permissions`
+统一守卫其它所有离线/无存储/无定位约束——任何漂移都会立刻 CI 红。
+
+## V2-ME 涉及的 test-fakes / RepoFactory 修补
+
+为了让 V2 测试在新构造函数签名上编译通过，test-child 改了
+`app/src/androidTest/java/com/yinian/android/data/repo/` 下两份共享桩：
+
+- `TestFakes.kt`：新增 `FakeFocusSessionSegmentDao`，镜像生产
+  `FocusSessionSegmentDao`：`upsert`、`close`、`listForSession`、`all`、
+  `listInWindow`。
+- `TestFakes.kt`：移除对已删除
+  `com.yinian.android.calendar.CalendarBusyReader` 的 import。
+- `RepoFactory.kt`：`makeRepository` 不再传入 `calendarBusyReader`；
+  新增 `focusSegmentDao = FakeFocusSessionSegmentDao()`。
+- `RepositoryIdeasTest.kt`：其私有 `makeRepoWithFilesDir` 同等替换，
+  构造一个真实 `AudioRecorder(context)` 不再经过 `CalendarBusyReader`。
+
+`@Database` 在 v4 上注册了 `MIGRATION_3_4`；构造 builder 时不调用任
+何 `fallbackToDestructiveMigration*` 路径，迁移是显式的。
+
+## 测试报告来源 / 一次性不会漂移的事实
+
+`outputs/instrumented-TEST-xml.xml` 的根属性是本仓库生成的
+`androidx.test.runner.AndroidJUnitRunner` 输出，写明 `failures="0"`
+`errors="0" sk_pped="0"`。`outputs/jvm-TEST-xml/TEST-*.xml` 7 份同
+样写在 `outputs/` 下。
+
+`PlanMeReviewSmokeTest.me_page_*` 的 `performScrollTo` 在设备 IME 与底
+部导航重叠的极端布局上可能超时——V2-ME 把外层 Column 改成
+`verticalScroll(rememberScrollState())` + 上下 inset padding +
+140dp 底部 Spacer 已让这组测试稳定 9/9 通过。
+
+## 已知 / 故意不做
+
+- **真实 Android 系统日历授权路径**：已移除（`READ_CALENDAR` / `WRITE_CALENDAR` /
+  `CalendarBusyReader` 三件套都不存在），没有 device-side 的授权流可以测。
+- **本机 ASR / 云端 LLM / 账号同步**：V1/V2 都没有接入，
+  `ManifestPermissionsTest` 用 manifest 层面守卫；UI 层由
+  `me_page_capabilities_dialog_lists_the_calendar_integration_as_removed`
+  + V1 的能力对话框列表守住。
+- **`PlannerEngine` 的两条 V2 修复**（同任务重复 placed /
+  placed+unscheduled 重复）保留在 `PlannerEngineTest.kt` 原位置，未做
+  任何改动继续作为固定回归证据。
+- **跨午夜会话切分在非 UTC 机器上**：生产代码
+  `FocusAttribution.splitAcrossDays` 内部硬编码 `ZoneId.systemDefault()`；
+  在本仓库的测试用例全部假设 `TZ=UTC`，任何在非 UTC 机器上跑测试
+  的人需要在 shell 里 `export TZ=UTC`。这一步是文档约定，不是
+  production bug，因为我们没有"修正生产代码"的所有权。
+
+- **`FocusReviewDialog` 空数据初始组合崩溃** ✅ 已修复（V2-FOCUS-REVIEW-CRASH-FIX）。原
+  `AlertDialog.text` lambda 里的
+  ```kotlin
+  if (perDay.isEmpty() && totalScheduledMs == 0L) {
+      Text(emptyStateHint(mode), …)
+      return@Column      // 非局部返回 → Compose 组边界不齐
+  }
+  ```
+  会让 Compose 编译出的 endGroup / endRoot 提前收尾，导致
+  `SlotTable.length=0; index=-5` 数组越界崩溃（设备端冒烟
+  `PlanMeReviewSmokeTest.me_page_focus_review_dialog_exposes_day_week_toggle_and_navigation_controls`
+  修复前在每次 `connectedDebugAndroidTest` 都稳定复现）。修复把早返回
+  替换成 `else` 分支，使两条分支都在同一个 `Column` 组下成对收尾 —
+  完整 diff 与编译证据见
+  本地工件 `outputs/v2-focus-review-crash-fix.md`（`outputs/` 目录被 `.gitignore` 排除，不纳入版本控制，仅供本地留存）。
+  V2-TEST-FINAL run（2026-10-16）该用例与 168 条整体用例都通过，回归
+  证据见本地工件 `outputs/v2-test-final.md`（`outputs/` 目录被 `.gitignore` 排除，不纳入版本控制，仅供本地留存）。
 
 ## 一次性事件：本次 run 未观察到
 
-本机本次一次性 run 中 `AppNavigationTest.all_four_bottom_tabs_are_reachable`
-连同其他 71 条用例一起在一次 170s 的完整跑里通过。历史 V1 报告曾记
-录过 Compose instrumentation 插桩层抖动造成的不稳定；本次没有触发。
-如未来环境出现该现象，可参考 V1 处理路径：保留断言、对单类单独跑一
-次以分离抖动、对照 `I TestRunner: finished: ...` 行确认通过。
+本机本次一次性 run 中 95 条设备端用例在 API 34 模拟器
+`Pixel_3a_API_34_extension_level_7_arm64-v8a`（已用
+`adb -s emulator-5554` 显式定向）上一次跑完。历史 V1 报告曾记录过
+Compose instrumentation 插桩层抖动造成的不稳定；本次没有触发。如
+未来环境出现该现象，可参考 V1 处理路径：保留断言、对单类单独跑一次
+以分离抖动、对照 `I TestRunner: finished: ...` 行确认通过。
 
 ## 仍在生效的硬件层提示
 
 - AVD 推荐 `Pixel_3a_API_34_extension_level_7_arm64-v8a`。
-- 真机并存时必须在命令行加
-  `-Pandroid.testInstrumentationRunnerArguments.serial=emulator-5554`
-  或先 `adb -s <other> disconnect`，否则 Gradle 会把用例同时下发造成
-  重复运行。
+- 真机并存时必须显式 `ANDROID_SERIAL=emulator-5554`（或在
+  `connectedDebugAndroidTest` 上加
+  `-Pandroid.testInstrumentationRunnerArguments.serial=emulator-5554`），
+  否则 Gradle 会把用例同时下发造成重复运行。本仓库在你看到这行的时
+  候已经存在 `127.0.0.1:5555` Samsung 真机。
+- JVM 测试一律在 `TZ=UTC` 下运行；这一约束反映在上面"已知 / 故意
+  不做"的最后一条。

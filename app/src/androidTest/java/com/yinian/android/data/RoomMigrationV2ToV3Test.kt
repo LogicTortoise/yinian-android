@@ -213,8 +213,11 @@ class RoomMigrationV2ToV3Test {
         v2.close()
 
         // 2. Open the same file as a Room v3 database with the production migration.
+        // We register BOTH MIGRATION_2_3 and MIGRATION_3_4 because the production
+        // AppDatabase is version=4; registering only the v2→v3 path leaves Room at
+        // v3 and the next reopen from this fixture would demand v3→v4 too.
         val db = Room.databaseBuilder(ctx, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_2_3)
+            .addMigrations(AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4)
             .build()
 
         try {

@@ -1,8 +1,8 @@
 package com.yinian.android.data.repo
 
 import com.yinian.android.audio.AudioRecorder
-import com.yinian.android.calendar.CalendarBusyReader
 import com.yinian.android.data.dao.FocusDao
+import com.yinian.android.data.dao.FocusSessionSegmentDao
 import com.yinian.android.data.dao.IdeaDao
 import com.yinian.android.data.dao.RecurringInstanceDao
 import com.yinian.android.data.dao.RecurringRuleDao
@@ -12,6 +12,7 @@ import com.yinian.android.data.dao.TaskDao
 import com.yinian.android.data.dao.TimeBlockDao
 import com.yinian.android.data.dao.WorkPolicyDao
 import com.yinian.android.data.entity.FocusSessionEntity
+import com.yinian.android.data.entity.FocusSessionSegmentEntity
 import com.yinian.android.data.entity.IdeaEntity
 import com.yinian.android.data.entity.RecurringInstanceEntity
 import com.yinian.android.data.entity.RecurringRuleEntity
@@ -170,6 +171,42 @@ internal class FakeFocusDao : FocusDao {
         )
         items.value = byId.values.sortedByDescending { it.startedAt }
     }
+}
+
+/**
+ * V2-ME in-memory fake for `FocusSessionSegmentDao`. Mirrors the production
+ * DAO interface so the repository's segment lifecycle assertions can run
+ * without a Room instance.
+ */
+internal class FakeFocusSessionSegmentDao : FocusSessionSegmentDao {
+    private val rows = MutableStateFlow<List<FocusSessionSegmentEntity>>(emptyList())
+    private val byId = mutableMapOf<String, FocusSessionSegmentEntity>()
+
+    private fun publish() {
+        rows.value = byId.values.sortedBy { it.startedAt }
+    }
+
+    override suspend fun upsert(segment: FocusSessionSegmentEntity) {
+        byId[segment.id] = segment
+        publish()
+    }
+
+    override suspend fun close(id: String, endedAt: Long) {
+        val existing = byId[id] ?: return
+        byId[id] = existing.copy(endedAt = endedAt)
+        publish()
+    }
+
+    override suspend fun listForSession(sessionId: String): List<FocusSessionSegmentEntity> =
+        rows.value.filter { it.sessionId == sessionId }.sortedBy { it.startedAt }
+
+    override suspend fun all(): List<FocusSessionSegmentEntity> = rows.value
+
+    override suspend fun listInWindow(startMs: Long, endMs: Long): List<FocusSessionSegmentEntity> =
+        rows.value.filter { seg ->
+            val segEnd = seg.endedAt ?: Long.MAX_VALUE
+            seg.startedAt < endMs && segEnd > startMs
+        }.sortedBy { it.startedAt }
 }
 
 internal class FakeWorkPolicyDao : WorkPolicyDao {

@@ -131,13 +131,18 @@ class RepositoryRecurringTest {
             .filter { it.recurringRuleId == rule.id && it.status == "open" }
         assertTrue(beforeArchive.isNotEmpty())
         repo.archiveRecurringRule(rule.id)
+        // observeActiveTasks() filters out archived rows, so future
+        // open tasks must disappear (archived). Today / past / completed
+        // rows are not affected by the archive path.
         val remainingActive = repo.observeActiveTasks().first()
-            .filter { it.recurringRuleId == rule.id && it.status == "open" }
+            .filter { it.recurringRuleId == rule.id }
         assertTrue(
-            "Future open tasks must be archived, not deleted silently",
-            remainingActive.isEmpty() || remainingActive.all { it.status == "archived" }
+            "Future open recurring tasks must be archived (not silently kept)",
+            remainingActive.none { it.status == "open" && (it.instanceDate
+                ?.let { key -> LocalDate.parse(key).isAfter(today) } ?: false)
+            }
         )
-        // Original row stays archived but exists.
+        // Original rule row stays archived but exists.
         assertTrue(repo.observeRecurringRules().first().first { it.id == rule.id }.archived)
     }
 

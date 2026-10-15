@@ -6,6 +6,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import android.content.Context
 import com.yinian.android.data.dao.FocusDao
+import com.yinian.android.data.dao.FocusSessionSegmentDao
 import com.yinian.android.data.dao.IdeaDao
 import com.yinian.android.data.dao.RecurringInstanceDao
 import com.yinian.android.data.dao.RecurringRuleDao
@@ -15,6 +16,7 @@ import com.yinian.android.data.dao.TaskDao
 import com.yinian.android.data.dao.TimeBlockDao
 import com.yinian.android.data.dao.WorkPolicyDao
 import com.yinian.android.data.entity.FocusSessionEntity
+import com.yinian.android.data.entity.FocusSessionSegmentEntity
 import com.yinian.android.data.entity.IdeaEntity
 import com.yinian.android.data.entity.RecurringInstanceEntity
 import com.yinian.android.data.entity.RecurringRuleEntity
@@ -31,12 +33,13 @@ import com.yinian.android.data.entity.WorkPolicyEntity
         RelationEntity::class,
         TimeBlockEntity::class,
         FocusSessionEntity::class,
+        FocusSessionSegmentEntity::class,
         WorkPolicyEntity::class,
         RecurringRuleEntity::class,
         RecurringInstanceEntity::class,
         ScheduleDraftEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -45,6 +48,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun relationDao(): RelationDao
     abstract fun timeBlockDao(): TimeBlockDao
     abstract fun focusDao(): FocusDao
+    abstract fun focusSegmentDao(): FocusSessionSegmentDao
     abstract fun workPolicyDao(): WorkPolicyDao
     abstract fun recurringRuleDao(): RecurringRuleDao
     abstract fun recurringInstanceDao(): RecurringInstanceDao
@@ -133,13 +137,54 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * V2-ME migration: Room v3 → v4.
+         *
+         * - Creates a new `focus_session_segments` table to hold precise
+         *   per-segment history (active vs paused). Existing V3 focus rows
+         *   are NOT backfilled; the focus review uses a documented fallback
+         *   attribution rule for them at read time (see
+         *   [com.yinian.android.data.repo.FocusAttribution]).
+         * - The table's `sessionId` column carries a cascading foreign key
+         *   onto `focus_sessions.id` so deleting a parent focus row cleans
+         *   up its segments automatically (matching the Room entity
+         *   declaration on `FocusSessionSegmentEntity`).
+         * - Two indices are added for the common query paths:
+         *   `sessionId` (per-session lookup) and `startedAt` (window scan).
+         *
+         * The migration is non-destructive and additive: every existing row
+         * survives, no column is dropped, no value is rewritten.
+         */
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS focus_session_segments (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        sessionId TEXT NOT NULL,
+                        kind TEXT NOT NULL,
+                        startedAt INTEGER NOT NULL,
+                        endedAt INTEGER,
+                        FOREIGN KEY (sessionId) REFERENCES focus_sessions(id) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_focus_session_segments_sessionId ON focus_session_segments(sessionId)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_focus_session_segments_startedAt ON focus_session_segments(startedAt)"
+                )
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 "yinian.db"
             )
-                .addMigrations(MIGRATION_2_3)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                 .build()
                 .also { instance = it }
         }

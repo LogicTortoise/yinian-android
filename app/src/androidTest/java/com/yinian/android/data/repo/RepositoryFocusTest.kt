@@ -121,4 +121,91 @@ class RepositoryFocusTest {
         repo.endFocus(id = "does-not-exist")
         assertEquals(0, repo.observeAllFocus().first().size)
     }
+
+    // ======================================================================
+    // V2-ME segment-history assertions
+    // ======================================================================
+
+    @Test
+    fun startFocus_writes_one_open_active_segment() = runTest {
+        val repo = makeRepository()
+        val s = repo.startFocus(taskId = "t1")
+        val segments = repo.focusSegmentsSnapshot().filter { it.sessionId == s.id }
+        assertEquals(1, segments.size)
+        assertEquals("active", segments[0].kind)
+        org.junit.Assert.assertNull(segments[0].endedAt)
+    }
+
+    @Test
+    fun pauseFocus_closes_active_segment_and_opens_paused_segment() = runTest {
+        val repo = makeRepository()
+        val s = repo.startFocus(taskId = "t1")
+        repo.pauseFocus(s.id)
+        val segments = repo.focusSegmentsSnapshot().filter { it.sessionId == s.id }
+        // Two segments: closed active, open paused.
+        assertEquals(2, segments.size)
+        val active = segments.first { it.kind == "active" }
+        val paused = segments.first { it.kind == "paused" }
+        org.junit.Assert.assertNotNull(active.endedAt)
+        org.junit.Assert.assertNull(paused.endedAt)
+    }
+
+    @Test
+    fun resumeFocus_closes_paused_segment_and_opens_new_active_segment() = runTest {
+        val repo = makeRepository()
+        val s = repo.startFocus(taskId = "t1")
+        repo.pauseFocus(s.id)
+        repo.resumeFocus(s.id)
+        val segments = repo.focusSegmentsSnapshot().filter { it.sessionId == s.id }
+        // Three segments: active, paused, active.
+        assertEquals(3, segments.size)
+        val activeSegments = segments.filter { it.kind == "active" }
+        val pausedSegments = segments.filter { it.kind == "paused" }
+        assertEquals(2, activeSegments.size)
+        assertEquals(1, pausedSegments.size)
+        // The first active segment is closed; the last active is open.
+        assertNotNull(activeSegments[0].endedAt)
+        org.junit.Assert.assertNull(activeSegments[1].endedAt)
+        org.junit.Assert.assertNotNull(pausedSegments[0].endedAt)
+    }
+
+    @Test
+    fun endFocus_closes_the_open_active_segment_and_writes_no_paused_segment() = runTest {
+        val repo = makeRepository()
+        val s = repo.startFocus(taskId = "t1")
+        repo.endFocus(s.id)
+        val segments = repo.focusSegmentsSnapshot().filter { it.sessionId == s.id }
+        assertEquals(1, segments.size)
+        org.junit.Assert.assertNotNull(segments[0].endedAt)
+        // All segments must be closed.
+        assertTrue(segments.all { it.endedAt != null })
+    }
+
+    @Test
+    fun cancelFocus_closes_any_open_segment_so_no_row_carries_endedAt_null() = runTest {
+        val repo = makeRepository()
+        val s = repo.startFocus(taskId = "t1")
+        repo.pauseFocus(s.id)
+        repo.cancelFocus(s.id)
+        val segments = repo.focusSegmentsSnapshot().filter { it.sessionId == s.id }
+        // Every segment must be closed.
+        assertTrue(segments.all { it.endedAt != null })
+        // Cancelled sessions are surfaced with status="cancelled" (filtered by FocusAttribution).
+        val focusRows = repo.observeAllFocus().first().first { it.id == s.id }
+        assertEquals("cancelled", focusRows.status)
+    }
+
+    @Test
+    fun segments_are_attributed_per_session_and_do_not_leak_between_sessions() = runTest {
+        val repo = makeRepository()
+        val s1 = repo.startFocus(taskId = "t1")
+        val s2 = repo.startFocus(taskId = "t2")
+        val s1Segments = repo.focusSegmentsSnapshot().filter { it.sessionId == s1.id }
+        val s2Segments = repo.focusSegmentsSnapshot().filter { it.sessionId == s2.id }
+        assertEquals(1, s1Segments.size)
+        assertEquals(1, s2Segments.size)
+        // No overlap between sessions.
+        assertTrue(s1Segments.all { it.sessionId == s1.id })
+        assertTrue(s2Segments.all { it.sessionId == s2.id })
+    }
 }

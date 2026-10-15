@@ -4,12 +4,11 @@
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!--
-        V2: read-only calendar integration. The permission is declared but
-        NOT requested up-front; the app only asks for it after the user
-        turns the integration on via the Me screen. V2 never declares
-        WRITE_CALENDAR.
+        V2-ME: system calendar integration removed. The app is strictly
+        local — no READ_CALENDAR, no WRITE_CALENDAR, no third-party calendar
+        dependency. Plans are built entirely from local time blocks, tasks,
+        work policies and focus data.
     -->
-    <uses-permission android:name="android.permission.READ_CALENDAR" />
 
     <application
         android:name=".YinianApp"
